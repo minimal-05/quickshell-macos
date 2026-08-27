@@ -19,3 +19,6 @@ target_link_libraries(quickshell-cocoa PRIVATE Qt::Quick "-framework AppKit")
 target_link_libraries(quickshell-cocoa-init PRIVATE Qt::Quick Qt::Qml "-framework AppKit")
 
 target_link_libraries(quickshell PRIVATE quickshell-cocoaplugin quickshell-cocoa-init)
+
+# Quickshell.Wayland compatibility module (WlrLayershell attached type + friends).
+add_subdirectory(wayland)

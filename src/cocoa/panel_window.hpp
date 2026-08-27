@@ -14,10 +14,12 @@
 #include "../core/util.hpp"
 #include "../window/panelinterface.hpp"
 #include "../window/proxywindow.hpp"
+#include "nswindow.hpp"
 
 namespace qs::cocoa {
 
 class CocoaPanelStack;
+class CocoaLayershell;
 
 class CocoaPanelEventFilter: public QObject {
 	Q_OBJECT;
@@ -81,6 +83,11 @@ public:
 	[[nodiscard]] bool focusable() const { return this->bFocusable; }
 	void setFocusable(bool focusable) { this->bFocusable = focusable; }
 
+	/// Pin the window to a specific native level, overriding the coarse
+	/// aboveWindows boolean. Set by the WlrLayershell attached object so
+	/// layer-shell configs land on the layer they asked for.
+	void setLayerOverride(PanelLayer layer);
+
 signals:
 	QSDOC_HIDE void anchorsChanged();
 	QSDOC_HIDE void exclusiveZoneChanged();
@@ -104,6 +111,9 @@ private:
 	QPointer<QScreen> mTrackedScreen = nullptr;
 	WId mRegisteredView = 0;
 	CocoaPanelEventFilter eventFilter;
+
+	bool mHasLayerOverride = false;
+	PanelLayer mLayerOverride = PanelLayer::Top;
 
 	// clang-format off
 	Q_OBJECT_BINDABLE_PROPERTY_WITH_ARGS(CocoaPanelWindow, bool, bAboveWindows, true, &CocoaPanelWindow::aboveWindowsChanged);
@@ -155,8 +165,12 @@ public:
 	void setFocusable(bool focusable) override;
 	// NOLINTEND
 
+	/// The WlrLayershell attached object for this panel, created on first use.
+	[[nodiscard]] CocoaLayershell* layershell();
+
 private:
 	CocoaPanelWindow* panel;
+	CocoaLayershell* mLayershell = nullptr;
 };
 
 } // namespace qs::cocoa
