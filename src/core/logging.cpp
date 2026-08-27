@@ -32,8 +32,24 @@
 #include <sys/sendfile.h>
 #include <sys/types.h>
 #endif
-#ifdef __FreeBSD__
+#if defined(__FreeBSD__) || defined(__APPLE__)
 #include <unistd.h>
+#endif
+#ifdef __APPLE__
+#include <cstdlib>
+#include <string>
+// macOS has no memfd_create; emulate with an unlinked temp file.
+namespace {
+int memfd_create(const char* name, unsigned int /*flags*/) {
+	auto path = std::string("/tmp/") + name + ".XXXXXX";
+	for (auto& c: path) {
+		if (c == ':') c = '.';
+	}
+	auto fd = mkstemp(path.data());
+	if (fd != -1) unlink(path.c_str());
+	return fd;
+}
+} // namespace
 #endif
 
 #include "instanceinfo.hpp"

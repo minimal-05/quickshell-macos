@@ -13,7 +13,9 @@
 #include <qscopeguard.h>
 #include <qtversion.h>
 #include <unistd.h>
+#ifdef __linux__
 #include <xf86drm.h>
+#endif
 
 #include "build.hpp"
 
@@ -28,6 +30,9 @@ QString qsVersion() {
 QString qtVersion() { return qVersion() % QStringLiteral(" (built against " QT_VERSION_STR ")"); }
 
 QString gpuInfo() {
+#ifndef __linux__
+	return QStringLiteral("<gpu info unavailable on this platform>");
+#else
 	auto deviceCount = drmGetDevices2(0, nullptr, 0);
 	if (deviceCount < 0) return "Failed to get DRM device count: " % QString::number(deviceCount);
 	auto* devices = new drmDevicePtr[deviceCount];
@@ -95,6 +100,7 @@ QString gpuInfo() {
 	}
 
 	return info;
+#endif
 }
 
 QString systemInfo() {
