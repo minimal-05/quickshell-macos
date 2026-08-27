@@ -18,6 +18,7 @@
 #include "../window/panelinterface.hpp"
 #include "../window/proxywindow.hpp"
 #include "nswindow.hpp"
+#include "wayland/layershell.hpp"
 
 namespace qs::cocoa {
 
@@ -158,8 +159,17 @@ void CocoaPanelWindow::updateNativeState() {
 
 	this->mRegisteredView = view;
 
-	auto layer = this->bAboveWindows.value() ? PanelLayer::Top : PanelLayer::Bottom;
+	auto layer = this->mHasLayerOverride
+	               ? this->mLayerOverride
+	               : (this->bAboveWindows.value() ? PanelLayer::Top : PanelLayer::Bottom);
+
 	registerPanel(view, layer, this->bFocusable.value());
+}
+
+void CocoaPanelWindow::setLayerOverride(PanelLayer layer) {
+	this->mHasLayerOverride = true;
+	this->mLayerOverride = layer;
+	this->updateNativeState();
 }
 
 void CocoaPanelWindow::updateFocusable() {
@@ -326,6 +336,15 @@ void CocoaPanelInterface::onReload(QObject* oldInstance) {
 }
 
 ProxyWindowBase* CocoaPanelInterface::proxyWindow() const { return this->panel; }
+
+CocoaLayershell* CocoaPanelInterface::layershell() {
+	if (!this->mLayershell) {
+		this->mLayershell = new CocoaLayershell(this->panel, this);
+	}
+
+	return this->mLayershell;
+}
+
 
 // NOLINTBEGIN
 #define proxyPair(type, get, set)                                                                  \
