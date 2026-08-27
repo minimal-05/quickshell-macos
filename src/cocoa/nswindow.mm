@@ -121,6 +121,17 @@ void ensureObserver() {
 void registerPanel(WId view, PanelLayer layer, bool focusable) {
 	if (view == 0) return;
 
+	// A process that owns panels is a shell: no Dock icon, no menu bar, never
+	// the active application. A process that owns none is an ordinary window
+	// (settings, the welcome screen) and must stay a regular app, or the user
+	// has no menu bar to quit it from and their cmd-Q lands on the shell.
+	static auto policyApplied = false;
+	if (!policyApplied) {
+		policyApplied = true;
+		setAccessoryActivationPolicy();
+		stripQuitKeyEquivalent();
+	}
+
 	ensureObserver();
 
 	auto config = PanelConfig {.layer = layer, .focusable = focusable};
@@ -132,6 +143,26 @@ void unregisterPanel(WId view) { panelConfigs().remove(view); }
 
 void setAccessoryActivationPolicy() {
 	[NSApplication.sharedApplication setActivationPolicy:NSApplicationActivationPolicyAccessory];
+}
+
+void stripQuitKeyEquivalent() {
+	// Qt builds its application menu lazily, so do this after the current turn
+	// of the run loop rather than racing it.
+	dispatch_async(dispatch_get_main_queue(), ^{
+	  auto* mainMenu = NSApplication.sharedApplication.mainMenu;
+	  if (mainMenu == nil || mainMenu.numberOfItems == 0) return;
+
+	  // The application menu is always the first item's submenu.
+	  auto* appMenu = [mainMenu itemAtIndex:0].submenu;
+	  if (appMenu == nil) return;
+
+	  for (NSMenuItem* item in appMenu.itemArray) {
+		  if ([item.keyEquivalent isEqualToString:@"q"]) {
+			  item.keyEquivalent = @"";
+			  item.keyEquivalentModifierMask = 0;
+		  }
+	  }
+	});
 }
 
 qreal screenTopSafeAreaInset(WId view) {

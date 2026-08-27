@@ -34,6 +34,14 @@ void reapplyPanels();
 /// Run without a dock icon or application menu bar.
 void setAccessoryActivationPolicy();
 
+/// Unbind cmd-Q from the Quit item Qt installs by default.
+///
+/// A shell is not an app you quit by reflex. Qt's cocoa plugin always builds an
+/// application menu whose Quit item is wired to cmd-Q, so a stray cmd-Q aimed at
+/// whatever happened to hold key status could tear the whole shell down. Quit
+/// stays available through the CLI and IPC.
+void stripQuitKeyEquivalent();
+
 /// Top inset of the screen containing @p view, in points. Zero when the display
 /// has no camera housing.
 qreal screenTopSafeAreaInset(WId view);

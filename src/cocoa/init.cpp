@@ -16,7 +16,13 @@ class CocoaPlugin: public QsEnginePlugin {
 
 	bool applies() override { return QGuiApplication::platformName() == "cocoa"; }
 
-	void init() override { qs::cocoa::setAccessoryActivationPolicy(); }
+	// Deliberately empty. Accessory activation policy is applied lazily, when
+	// the first panel is registered — see registerPanel() in nswindow.mm.
+	// Applying it here would hit every quickshell process, including ones whose
+	// only window is an ordinary application window (the settings and welcome
+	// configs). Those need to stay a regular app: with a Dock icon, a menu bar,
+	// and their own Quit item, so closing them is unambiguous.
+	void init() override {}
 
 	void registerTypes() override {
 		qmlRegisterType<qs::cocoa::CocoaPanelInterface>(
