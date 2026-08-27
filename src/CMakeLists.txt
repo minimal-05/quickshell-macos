@@ -29,6 +29,10 @@ if (X11)
 	add_subdirectory(x11)
 endif()
 
+if (COCOA)
+	add_subdirectory(cocoa)
+endif()
+
 add_subdirectory(services)
 
 if (BLUETOOTH)

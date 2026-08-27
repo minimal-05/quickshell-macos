@@ -1,4 +1,8 @@
-pkg_check_modules(libdrm REQUIRED IMPORTED_TARGET libdrm)
+if (NOT APPLE)
+	find_package(PkgConfig REQUIRED)
+	pkg_check_modules(libdrm REQUIRED IMPORTED_TARGET libdrm)
+	set(QS_LIBDRM_TARGET PkgConfig::libdrm)
+endif()
 qt_add_library(quickshell-core STATIC
 	plugin.cpp
 	shell.cpp
@@ -55,7 +59,7 @@ qt_add_qml_module(quickshell-core
 
 install_qml_module(quickshell-core)
 
-target_link_libraries(quickshell-core PRIVATE Qt::Quick Qt::QuickPrivate Qt::Widgets quickshell-build PkgConfig::libdrm)
+target_link_libraries(quickshell-core PRIVATE Qt::Quick Qt::QuickPrivate Qt::Widgets quickshell-build ${QS_LIBDRM_TARGET})
 
 qs_module_pch(quickshell-core SET large)
 

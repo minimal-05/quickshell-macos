@@ -1,0 +1,21 @@
+enable_language(OBJCXX)
+
+qt_add_library(quickshell-cocoa STATIC
+	nswindow.mm
+	panel_window.cpp
+)
+
+qt_add_qml_module(quickshell-cocoa
+	URI Quickshell.Cocoa
+	VERSION 0.1
+	DEPENDENCIES QtQuick
+)
+
+install_qml_module(quickshell-cocoa)
+
+add_library(quickshell-cocoa-init OBJECT init.cpp)
+
+target_link_libraries(quickshell-cocoa PRIVATE Qt::Quick "-framework AppKit")
+target_link_libraries(quickshell-cocoa-init PRIVATE Qt::Quick Qt::Qml "-framework AppKit")
+
+target_link_libraries(quickshell PRIVATE quickshell-cocoaplugin quickshell-cocoa-init)
