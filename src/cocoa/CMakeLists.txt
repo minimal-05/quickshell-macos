@@ -2,6 +2,8 @@ enable_language(OBJCXX)
 
 qt_add_library(quickshell-cocoa STATIC
 	nswindow.mm
+	appicon.mm
+	focusgrab.mm
 	panel_window.cpp
 )
 
@@ -15,7 +17,8 @@ install_qml_module(quickshell-cocoa)
 
 add_library(quickshell-cocoa-init OBJECT init.cpp)
 
-target_link_libraries(quickshell-cocoa PRIVATE Qt::Quick "-framework AppKit")
+# QuartzCore for CAMediaTimingFunction, used by the panel open/close animations.
+target_link_libraries(quickshell-cocoa PRIVATE Qt::Quick "-framework AppKit" "-framework QuartzCore")
 target_link_libraries(quickshell-cocoa-init PRIVATE Qt::Quick Qt::Qml "-framework AppKit")
 
 target_link_libraries(quickshell PRIVATE quickshell-cocoaplugin quickshell-cocoa-init)

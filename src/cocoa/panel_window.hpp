@@ -7,6 +7,8 @@
 #include <qqmlintegration.h>
 #include <qscreen.h>
 #include <qtclasshelpermacros.h>
+#include <qpoint.h>
+#include <qtimer.h>
 #include <qtmetamacros.h>
 #include <qtypes.h>
 
@@ -54,6 +56,8 @@ public:
 
 	void connectWindow() override;
 	[[nodiscard]] bool deleteOnInvisible() const override { return false; }
+
+	void setVisibleDirect(bool visible) override;
 
 	void trySetWidth(qint32 implicitWidth) override;
 	void trySetHeight(qint32 implicitHeight) override;
@@ -108,11 +112,45 @@ private:
 	void updateDimensionsCb() { this->updateDimensions(); }
 	void updateFocusable();
 
+	[[nodiscard]] PanelAnimation openCloseAnimation() const;
+	void finishOpenCloseAnimation();
+
+public:
+	/// Post a synthetic leave when the pointer is no longer over this panel.
+	///
+	/// A backstop, not the primary mechanism. This was originally added on the
+	/// assumption that Qt never sees the exit for a borderless, never-key panel in
+	/// an accessory process; that assumption was afterwards measured and is FALSE.
+	/// Under exactly those conditions a hoverEnabled MouseArea reported
+	/// containsMouse false 5ms after a single pointer event moved off the panel,
+	/// so the exit does arrive. The always-active NSTrackingArea installed in
+	/// applyConfig is what delivers it, and it is the fastest of the options
+	/// measured.
+	///
+	/// This is kept because it costs almost nothing -- a cursor sample was
+	/// measured at ~0.006ms, about 0.04% of one core at this interval -- and it
+	/// covers the cases the tracking area cannot: a panel that moves or is
+	/// destroyed out from under a stationary pointer, and a window appearing over
+	/// one. It never fires spuriously, since it only acts when the pointer is
+	/// outside the whole window.
+	void updatePointerInside(const QPoint& pointer);
+
+private:
+
 	QPointer<QScreen> mTrackedScreen = nullptr;
 	WId mRegisteredView = 0;
 	CocoaPanelEventFilter eventFilter;
 
+	// A closing panel stays mapped until its animation has played out; the timer
+	// is what finally hides it. Geometry updates are NOT held off meanwhile --
+	// popin scales the rendered layer and never moves the frame, so the window
+	// can be resized and repositioned freely while it plays.
+	QTimer mAnimationTimer;
+	bool mClosing = false;
+
 	bool mHasLayerOverride = false;
+	bool mPointerInside = false;
+	QPoint mLastPointer;
 	PanelLayer mLayerOverride = PanelLayer::Top;
 
 	// clang-format off
