@@ -1,15 +1,28 @@
-# quickshell-src — C++ / Cocoa backend only
+# quickshell-macos
 
-Upstream `quickshell-mirror/quickshell` plus our **unpushed macOS Cocoa backend**
-(4 commits on top of upstream, plus uncommitted work in `src/cocoa/`).
+Fork of `quickshell-mirror/quickshell` with a macOS Cocoa backend, plus the
+launcher scripts that drive it. Upstream history is intact — the macOS work is
+commits on top, not a patch.
 
-Rescued on 2026-08-28 from a Claude job scratch dir that would have been deleted
-with the job. Nothing but this checkout has that work — **do not delete, and push
-it somewhere.**
+## Where things go
 
-- Shell config is *not* here. It is in `~/.config/quickshell`.
-- Build/run loop: `~/Projects/quickshell-macos/bin/qs-dev` (builds from here).
-- Full layout: `~/.config/CLAUDE.md`.
+- **C++ / Cocoa backend** → `src/cocoa/`. Rebuild with `bin/qs-build`.
+- **Launchers, shims, dev loop** → `bin/`, `shims/`.
+- **Shell config (bar, pills, services)** is *not* here. It lives in
+  `~/.config/quickshell`, in the `darwin-dotfiles` repo. `./shell` is a symlink
+  to it — do not replace it with a directory.
 
-`~/Projects/qs-macos-spike` is the older checkout *without* the Cocoa backend.
-Prefer this one.
+## Not committed, but on disk
+
+`bin/quickshell` (built binary), `build/`, and `examples/end4-ii` (end-4's
+illogical-impulse config — third party, its own licence). All gitignored on
+purpose; don't "fix" them by adding them.
+
+## Gotchas
+
+- Copying the binary invalidates its ad-hoc signature and the kernel kills it on
+  exec **with no output**. Re-sign after any copy: `codesign -f -s - bin/quickshell`.
+- Never hardcode a `~/.claude/jobs/*/tmp` path here. Those are scratch dirs
+  deleted with the job; two scripts used to build from one.
+- `karabiner.json` and `skhdrc` call `bin/qs-ipc` by **absolute path**. Moving
+  this repo means updating both.
