@@ -1,8 +1,12 @@
 #include "panel_window.hpp"
 #include <map>
 
+#include <qcoreapplication.h>
+#include <qcursor.h>
 #include <qevent.h>
 #include <qlist.h>
+#include <qpoint.h>
+#include <qtimer.h>
 #include <qnamespace.h>
 #include <qobject.h>
 #include <qqmlengine.h>
@@ -113,9 +117,201 @@ CocoaPanelWindow::CocoaPanelWindow(QObject* parent): ProxyWindowBase(parent) {
 	});
 
 	this->bcExclusionEdge.setBinding([this] { return this->bAnchors.value().exclusionEdge(); });
+
+	this->mAnimationTimer.setSingleShot(true);
+	QObject::connect(
+	    &this->mAnimationTimer,
+	    &QTimer::timeout,
+	    this,
+	    &CocoaPanelWindow::finishOpenCloseAnimation
+	);
+}
+
+namespace {
+
+// Hyprland animates every layer surface as it maps and unmaps, and end-4 leaves
+// that at the default `popin` style, so every panel animates the same way and
+// there is nothing to select per panel. Geometry and fade are separate
+// animations with different curves and different lengths, so a panel is only
+// settled once the slower of each pair has finished:
+//   open:  layersIn 270ms  vs fadeLayersIn 50ms
+//   close: layersOut 240ms vs fadeLayersOut 270ms
+constexpr auto ANIMATION_OPEN_MS = 270;
+constexpr auto ANIMATION_CLOSE_MS = 270;
+
+} // namespace
+
+namespace {
+
+QList<CocoaPanelWindow*>& pointerTrackedPanels() {
+	static auto panels = QList<CocoaPanelWindow*>();
+	return panels;
+}
+
+// A poll rather than an NSEvent global monitor: the monitor only reports moves,
+// and the pointer can also end up off a panel because a window opened under it
+// or the panel itself moved. Sampling the cursor covers all of those, and at
+// this interval it is far below the cost of the animations it is guarding.
+constexpr auto POINTER_POLL_MS = 50;
+
+void ensurePointerPoller() {
+	static QTimer* timer = nullptr;
+	if (timer != nullptr) return;
+
+	timer = new QTimer(QCoreApplication::instance());
+	timer->setInterval(POINTER_POLL_MS);
+
+	QObject::connect(timer, &QTimer::timeout, [] {
+		auto pointer = QCursor::pos();
+		for (auto* panel: pointerTrackedPanels()) {
+			panel->updatePointerInside(pointer);
+		}
+	});
+
+	timer->start();
+}
+
+} // namespace
+
+void CocoaPanelWindow::updatePointerInside(const QPoint& pointer) {
+	if (this->window == nullptr || !this->window->isVisible()) {
+		this->mPointerInside = false;
+		return;
+	}
+
+	auto inside = this->window->geometry().contains(pointer);
+	if (inside == this->mPointerInside) return;
+	this->mPointerInside = inside;
+
+	if (!inside) {
+		QCoreApplication::postEvent(this->window, new QEvent(QEvent::Leave));
+		return;
+	}
+
+	// Entering has to be synthesised too. AppKit only routes pointer events to
+	// the application it considers frontmost, and a shell is an accessory that
+	// never becomes frontmost on its own -- so until something makes this process
+	// active, a panel is never told the pointer is over it and nothing hover
+	// driven works. That is why the bar had to be clicked once before its
+	// dropdowns would open. Feeding Qt the moves directly removes the dependency
+	// on activation entirely.
+	//
+	// Real moves, when they do arrive, carry the same coordinates, so the two
+	// paths agree rather than fighting; a repeat at an unchanged position is
+	// skipped so this is idle when the pointer is still.
+	if (pointer == this->mLastPointer) return;
+	this->mLastPointer = pointer;
+
+	auto local = QPointF(pointer - this->window->geometry().topLeft());
+
+	QCoreApplication::postEvent(
+	    this->window,
+	    new QMouseEvent(
+	        QEvent::MouseMove,
+	        local,
+	        QPointF(pointer),
+	        Qt::NoButton,
+	        Qt::NoButton,
+	        Qt::NoModifier
+	    )
+	);
+}
+
+PanelAnimation CocoaPanelWindow::openCloseAnimation() const {
+	// Upstream applies layersIn/layersOut to every layer surface without
+	// exception, bar popups included, so there is nothing to select on here.
+	// popin scales about the centre and never leaves the panel's resting area,
+	// which is also why it is safe for a surface the pointer is hovering: unlike
+	// a slide, it does not move out from under the cursor.
+	if (this->window == nullptr) return PanelAnimation::None;
+	return PanelAnimation::Popin;
+}
+
+void CocoaPanelWindow::setVisibleDirect(bool visible) {
+	auto animation = this->openCloseAnimation();
+
+	// Nothing to play: show and hide immediately, exactly as this did before any
+	// of the animation machinery existed. Taking the animated path with a None
+	// animation would still hold the hide back by a full close duration, which a
+	// surface created and destroyed as fast as a hover popup cannot absorb.
+	if (animation == PanelAnimation::None) {
+		this->mAnimationTimer.stop();
+		this->mClosing = false;
+
+		this->ProxyWindowBase::setVisibleDirect(visible);
+
+		if (visible && this->window != nullptr && this->window->handle() != nullptr) {
+			// A previous close left the window transparent; nothing else will put
+			// the opacity back when no open animation runs.
+			settlePanel(this->window->winId());
+			this->updateDimensions();
+		}
+
+		return;
+	}
+
+	if (visible) {
+		auto reopening = this->mClosing;
+
+		// Already open and not on its way out: nothing to play, and an open
+		// animation still in flight must be left to finish.
+		if (this->isVisibleDirect() && !reopening) {
+			this->ProxyWindowBase::setVisibleDirect(true);
+			return;
+		}
+
+		// Reopening mid close cancels the pending hide, or it would fire over the
+		// panel that just came back.
+		this->mAnimationTimer.stop();
+		this->mClosing = false;
+
+		this->ProxyWindowBase::setVisibleDirect(true);
+		if (this->window == nullptr || this->window->handle() == nullptr) return;
+
+		// popin scales about the panel's centre, so the resting frame is also the
+		// frame the animation plays on. Place it before scaling it.
+		this->updateDimensions();
+
+		animatePanel(this->window->winId(), animation, true, ANIMATION_OPEN_MS);
+		this->mAnimationTimer.start(ANIMATION_OPEN_MS);
+	} else {
+		// Panels are hidden by a property binding, which can settle on false more
+		// than once. Only the first hide starts the animation; the rest would cut
+		// it short and make the panel blink out.
+		if (this->mClosing) return;
+
+		if (!this->isVisibleDirect() || this->window == nullptr
+		    || this->window->handle() == nullptr)
+		{
+			this->mAnimationTimer.stop();
+			this->ProxyWindowBase::setVisibleDirect(false);
+			return;
+		}
+
+		this->mClosing = true;
+		animatePanel(this->window->winId(), animation, false, ANIMATION_CLOSE_MS);
+		this->mAnimationTimer.start(ANIMATION_CLOSE_MS);
+	}
+}
+
+void CocoaPanelWindow::finishOpenCloseAnimation() {
+	this->mAnimationTimer.stop();
+
+	if (this->mClosing) {
+		this->mClosing = false;
+		this->ProxyWindowBase::setVisibleDirect(false);
+	}
+
+	// Drop the held final scale and restore full opacity.
+	if (this->window != nullptr && this->window->handle() != nullptr) {
+		settlePanel(this->window->winId());
+	}
+
+	this->updateDimensions();
 }
 
 CocoaPanelWindow::~CocoaPanelWindow() {
+	pointerTrackedPanels().removeAll(this);
 	CocoaPanelStack::instance()->removePanel(this);
 	if (this->mRegisteredView != 0) unregisterPanel(this->mRegisteredView);
 }
@@ -143,6 +339,9 @@ void CocoaPanelWindow::connectWindow() {
 }
 
 void CocoaPanelWindow::cocoaInit() {
+	if (!pointerTrackedPanels().contains(this)) pointerTrackedPanels().append(this);
+	ensurePointerPoller();
+
 	if (this->window == nullptr || this->window->handle() == nullptr) return;
 
 	this->updateDimensions();
