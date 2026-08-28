@@ -1,26 +1,55 @@
-# Quickshell
-See the [website](https://quickshell.outfoxxed.me) for more information
-and installation instructions.
+# quickshell-macos
 
-This repo is hosted at:
-- https://git.outfoxxed.me/quickshell/quickshell
-- https://github.com/quickshell-mirror/quickshell
+A macOS port of [Quickshell](https://quickshell.outfoxxed.me) — a Cocoa
+platform backend for the C++ engine, QML shims for the Linux-only modules, and
+the launcher scripts that tie it into a real desktop.
 
-# Contributing / Development
-- [HACKING.md](HACKING.md) - Development instructions and policy.
-- [CONTRIBUTING.md](CONTRIBUTING.md) - Contribution policy.
-- [BUILD.md](BUILD.md) - Packaging and build instructions.
+This is a fork of
+[quickshell-mirror/quickshell](https://github.com/quickshell-mirror/quickshell).
+Upstream's history is intact; the macOS work sits on top of it. Same licence as
+upstream (**GPL-3.0**) — see [LICENSE](LICENSE) and [LICENSE-GPL](LICENSE-GPL).
+Upstream docs: [BUILD.md](BUILD.md), [HACKING.md](HACKING.md).
 
-#### License
+## Install
 
-<sup>
-Licensed under the GNU LGPL 3.
-</sup>
+```sh
+git clone https://github.com/minimal-05/quickshell-macos.git ~/Projects/quickshell-macos
+cd ~/Projects/quickshell-macos && ./install.sh
+```
 
-<br>
+Builds the engine, code-signs it, and drops it at `bin/quickshell`.
 
-<sub>
-Unless you explicitly state otherwise, any contribution submitted
-for inclusion shall be licensed as above, without any additional
-terms or conditions.
-</sub>
+## What's here
+
+| | |
+|---|---|
+| `src/cocoa/` | the macOS platform backend — panels, layer-shell equivalent, focus grabs, app icons |
+| `shims/` | QML stand-ins for `Quickshell.Hyprland`, `Quickshell.Bluetooth` and friends |
+| `bin/qs-*` | launchers: build, dev-loop, IPC, notification bridge, palette generation |
+| `PLATFORM.md` | **read this to extend the port** — where the platform seam is, what must be C++ |
+
+Everything else is upstream.
+
+## Running a shell
+
+`bin/qs-switch mine` runs the config at `~/.config/quickshell`, which lives in
+my [darwin-dotfiles](https://github.com/minimal-05/darwin-dotfiles).
+
+## Development
+
+```sh
+bin/qs-dev              # rebuild if sources changed, reinstall, restart
+bin/qs-dev --no-build   # QML-only edits need nothing built
+```
+
+## Notes
+
+- The build is ad-hoc code-signed. Copying a Mach-O binary invalidates its
+  signature and the kernel then kills it on exec **with no output at all**, so
+  `qs-build` re-signs every time. If Quickshell dies silently, check that first.
+- Media keys are grabbed by Karabiner and routed to `bin/qs-ipc`, which is why
+  macOS never draws its own volume/brightness HUD. The OSD is signal-driven, so
+  new bindings belong at the key, not at the HUD.
+- `examples/end4-ii` (end-4's illogical-impulse config, adapted) is **not**
+  committed here — it is a large third-party config with its own licence. Fetch
+  it from [end-4/dots-hyprland](https://github.com/end-4/dots-hyprland).

@@ -1,0 +1,7 @@
+module Quickshell.Services.SystemTray
+singleton SystemTray 1.0 SystemTray.qml
+singleton Status 1.0 Status.qml
+singleton Category 1.0 Category.qml
+singleton SystemTrayStatus 1.0 SystemTrayStatus.qml
+singleton SystemTrayCategory 1.0 SystemTrayCategory.qml
+SystemTrayItem 1.0 SystemTrayItem.qml

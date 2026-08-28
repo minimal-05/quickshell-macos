@@ -1,0 +1,3 @@
+#!/bin/bash
+# xdg-open(1) for macOS. `open` handles URLs, files and directories the same way.
+exec /usr/bin/open "$@"

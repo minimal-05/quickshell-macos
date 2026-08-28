@@ -1,0 +1,104 @@
+#!/usr/bin/env python3
+"""Make installed macOS apps visible to the launcher.
+
+Quickshell finds apps through XDG desktop entries, which macOS has none of, so
+the search bar came up empty. This walks the Applications folders and writes one
+.desktop file per app into ~/.local/share/applications -- the directory
+DesktopEntryManager already scans when XDG_DATA_HOME is unset.
+
+    qs-index-apps            (re)generate the entries
+    qs-index-apps --remove   delete the ones we generated
+
+Exec shells out to `open`, and Icon is the bundle path: quickshell's icon
+provider hands unresolved names to NSWorkspace, which returns the real app icon
+for an absolute .app path.
+"""
+
+import os
+import pathlib
+import re
+import plistlib
+import sys
+
+ROOTS = ["/Applications", "/System/Applications", os.path.expanduser("~/Applications")]
+OUT = pathlib.Path.home() / ".local/share/applications"
+MARKER = "X-Generated-By=qs-index-apps"
+MAX_DEPTH = 3
+
+
+def find_apps():
+    for root in ROOTS:
+        if not os.path.isdir(root):
+            continue
+        for dirpath, dirnames, _ in os.walk(root):
+            depth = dirpath[len(root):].count(os.sep)
+            keep = []
+            for d in dirnames:
+                if d.endswith(".app"):
+                    yield os.path.join(dirpath, d)  # never descend into a bundle
+                elif depth < MAX_DEPTH:
+                    keep.append(d)
+            dirnames[:] = keep
+
+
+def read_info(app):
+    try:
+        with open(os.path.join(app, "Contents", "Info.plist"), "rb") as f:
+            info = plistlib.load(f)
+    except Exception:
+        return None
+    # Agents and background helpers have no UI to launch.
+    if info.get("LSUIElement") or info.get("LSBackgroundOnly"):
+        return None
+    name = info.get("CFBundleDisplayName") or info.get("CFBundleName") or os.path.basename(app)[:-4]
+    return str(name), info.get("CFBundleIdentifier")
+
+
+def escape(value):
+    return value.replace("\\", "\\\\").replace("\n", " ")
+
+
+def remove_generated():
+    n = 0
+    for f in OUT.glob("*.desktop"):
+        if MARKER in f.read_text(errors="replace"):
+            f.unlink()
+            n += 1
+    return n
+
+
+def main():
+    if "--remove" in sys.argv:
+        print(f"removed {remove_generated()} entries from {OUT}")
+        return
+
+    OUT.mkdir(parents=True, exist_ok=True)
+    remove_generated()  # so uninstalled apps don't linger
+
+    seen = set()
+    written = 0
+    for app in sorted(find_apps()):
+        parsed = read_info(app)
+        if not parsed:
+            continue
+        name, bundle_id = parsed
+        stem = bundle_id or "app-" + name.lower().replace(" ", "-")
+        stem = re.sub(r"[^A-Za-z0-9._-]", "-", stem)  # bundle ids may contain "/"
+        if stem in seen:
+            continue
+        seen.add(stem)
+        (OUT / f"{stem}.desktop").write_text(
+            "[Desktop Entry]\n"
+            "Type=Application\n"
+            f"Name={escape(name)}\n"
+            f'Exec=/usr/bin/open -a "{escape(app)}"\n'
+            f"Icon={escape(app)}\n"
+            "Terminal=false\n"
+            f"{MARKER}\n"
+        )
+        written += 1
+
+    print(f"indexed {written} apps into {OUT}")
+
+
+main()

@@ -1,0 +1,6 @@
+module Quickshell.Services.Notifications
+singleton NotificationUrgency 1.0 NotificationUrgency.qml
+singleton NotificationCloseReason 1.0 NotificationCloseReason.qml
+NotificationServer 1.0 NotificationServer.qml
+Notification 1.0 Notification.qml
+NotificationAction 1.0 NotificationAction.qml

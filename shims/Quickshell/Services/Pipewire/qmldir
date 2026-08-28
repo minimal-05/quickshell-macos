@@ -1,0 +1,13 @@
+module Quickshell.Services.Pipewire
+
+singleton Pipewire 1.0 Pipewire.qml
+singleton PwAudioChannel 1.0 PwAudioChannel.qml
+singleton PwNodeType 1.0 PwNodeType.qml
+singleton PwLinkState 1.0 PwLinkState.qml
+
+PwNode 1.0 PwNode.qml
+PwNodeAudio 1.0 PwNodeAudio.qml
+PwLink 1.0 PwLink.qml
+PwLinkGroup 1.0 PwLinkGroup.qml
+PwObjectTracker 1.0 PwObjectTracker.qml
+PwNodeLinkTracker 1.0 PwNodeLinkTracker.qml
