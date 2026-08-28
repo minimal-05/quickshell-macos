@@ -1,0 +1,39 @@
+#!/bin/bash
+# Build Quickshell for macOS from this checkout.
+#
+#   qs-build              build into ./build and install into bin/
+#   qs-build --clean      discard the build directory first
+#
+# The Cocoa backend lives in src/cocoa/ in this repo. Edit it and re-run.
+
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+BUILD="$ROOT/build"
+
+export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+
+[ "${1:-}" = "--clean" ] && { echo "==> removing $BUILD"; rm -rf "$BUILD"; }
+
+for tool in cmake ninja git python3; do
+    command -v "$tool" >/dev/null || { echo "missing: $tool" >&2; exit 1; }
+done
+
+echo "==> configuring"
+# The Linux-only subsystems default off on Apple, so no -D flags are needed.
+cmake -B "$BUILD" -S "$ROOT" -G Ninja \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_PREFIX_PATH=/opt/homebrew \
+    -DDISTRIBUTOR="quickshell-macos" >/dev/null
+
+echo "==> building"
+cmake --build "$BUILD" -j"$(sysctl -n hw.ncpu)"
+
+echo "==> installing to $ROOT/bin/quickshell"
+cp "$BUILD/src/quickshell" "$ROOT/bin/quickshell"
+
+# Copying a Mach-O binary invalidates its ad-hoc signature and the kernel then
+# kills it on exec with no output at all. Re-sign every time.
+codesign -f -s - "$ROOT/bin/quickshell"
+
+"$ROOT/bin/quickshell" --version

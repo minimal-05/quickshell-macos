@@ -1,0 +1,5 @@
+module Quickshell.Services.Pam
+PamContext 1.0 PamContext.qml
+# Enum carriers (QML-declared enums; accessed as Type.Value, e.g. PamResult.Success).
+PamResult 1.0 PamResult.qml
+PamError 1.0 PamError.qml

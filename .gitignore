@@ -13,3 +13,11 @@
 # direnv
 /.envrc
 /.direnv/
+
+# macOS fork: build artifacts and third-party config
+/bin/quickshell
+/bin/qs
+/bin/__pycache__
+/shell
+/proof-*.png
+.DS_Store

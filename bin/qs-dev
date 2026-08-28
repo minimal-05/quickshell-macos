@@ -1,0 +1,78 @@
+#!/bin/bash
+# Fast edit -> run loop for the Cocoa backend.
+#
+# Replaces the hand-rolled sequence that was costing a few minutes per attempt:
+# build, copy, re-sign, kill, restart, sleep a guessed 20+ seconds, grep the log.
+# The sleep was most of it -- this polls for readiness instead, so a QML-only
+# change costs a couple of seconds and a C++ change costs the compile.
+#
+#   qs-dev              rebuild if sources changed, reinstall, restart the shell
+#   qs-dev --no-build   just restart the shell (QML edits need nothing else)
+#   qs-dev --probe      restart, then run the hover probe
+#
+# QML under examples/ and shims/ is read at startup, so a restart picks it up;
+# there is nothing to build for those.
+
+set -uo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SRC="${QS_SRC:-$HOME/Projects/quickshell-src}"
+CONFIG="${QS_CONFIG:-$ROOT/examples/end4-ii/shell.qml}"
+LOG=/tmp/qs-dev.log
+
+export PATH="$ROOT/bin:/opt/homebrew/bin:$PATH"
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp/quickshell-$UID}"
+export QML2_IMPORT_PATH="$ROOT/shims"
+mkdir -p "$XDG_RUNTIME_DIR"
+
+started=$(date +%s)
+step() { printf '  %-22s %ss\n' "$1" "$(( $(date +%s) - started ))"; }
+
+if [ "${1:-}" != "--no-build" ]; then
+    if ! cmake --build "$SRC/build" -j8 > /tmp/qs-dev-build.log 2>&1; then
+        echo "BUILD FAILED:" >&2
+        grep -E 'error|Error' /tmp/qs-dev-build.log | head -20 >&2
+        exit 1
+    fi
+    step "built"
+
+    # Copying a Mach-O invalidates its signature and the kernel then kills the
+    # process with no output at all, so re-signing is not optional. Staged
+    # through a temp name so a running shell is never left half-written.
+    cp "$SRC/build/src/quickshell" "$ROOT/bin/quickshell.new"
+    codesign -f -s - "$ROOT/bin/quickshell.new" >/dev/null 2>&1
+    mv "$ROOT/bin/quickshell.new" "$ROOT/bin/quickshell"
+    step "installed + signed"
+fi
+
+pkill -f "$(basename "$CONFIG")" 2>/dev/null
+sleep 1
+nohup "$ROOT/bin/quickshell" -p "$CONFIG" > "$LOG" 2>&1 &
+disown
+
+# Poll for readiness rather than sleeping a fixed guess.
+ready=0
+for _ in $(seq 1 120); do
+    if grep -q 'Configuration Loaded' "$LOG" 2>/dev/null; then ready=1; break; fi
+    pgrep -f "$(basename "$CONFIG")" >/dev/null || break
+    sleep 0.25
+done
+
+if [ "$ready" -eq 1 ]; then step "shell loaded"
+else echo "  shell did NOT load — see $LOG" >&2; tail -5 "$LOG" >&2; exit 1; fi
+
+# grep -c exits 1 on zero matches, so `|| echo 0` would append a second line.
+# The launchers start the notification bridge; without this a session that only
+# ever uses qs-dev silently has no bridge and macOS notifications go nowhere. The
+# bridge holds an flock, so calling this when one is already up is a no-op.
+if [ -x "$ROOT/bin/qs-notify-bridge" ]; then
+    nohup "$ROOT/bin/qs-notify-bridge" >/dev/null 2>&1 &
+    disown
+fi
+
+errs=$(grep -c 'ERROR' "$LOG" 2>/dev/null | head -1)
+errs=${errs:-0}
+echo "  errors: $errs"
+[ "$errs" -eq 0 ] || grep 'ERROR' "$LOG" | head -5
+
+[ "${1:-}" = "--probe" ] && "$ROOT/bin/qs-probe"
+exit 0

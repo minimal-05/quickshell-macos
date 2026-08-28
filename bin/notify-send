@@ -1,0 +1,104 @@
+#!/bin/bash
+# notify-send(1) for macOS.
+#
+# Linux shell configs call this by name from a lot of places, including inside
+# shell strings where rewriting the call site is awkward. Providing the name on
+# PATH fixes every one of them at once.
+#
+# Delivery order:
+#   1. The running quickshell instance, over its own IPC socket, into the
+#      Quickshell.Services.Notifications shim's NotificationServer. That is what
+#      makes the shell's own notification popup and sidebar list show these -- on
+#      Linux they arrive over org.freedesktop.Notifications, which macOS has no
+#      equivalent of, so quickshell IPC stands in for the bus.
+#   2. If no shell is running (or IPC fails), macOS Notification Center via
+#      osascript, so the message is not simply lost.
+#
+# Supports the options that actually get used: -a/--app-name, -i/--icon,
+# -u/--urgency, -t/--expire-time, -c/--category, -h/--hint, -e, -p.
+
+set -uo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# `quickshell ipc` picks an instance by config path, and qs-switch can start
+# either shell, so try both rather than guessing.
+configs=()
+[ -n "${QS_SHELL_CONFIG:-}" ] && configs+=("$QS_SHELL_CONFIG")
+configs+=("$ROOT/examples/end4-ii/shell.qml" "$HOME/.config/quickshell/shell.qml")
+
+app=""
+icon=""
+urgency=1
+expire=-1
+transient=false
+print_id=false
+args=()
+
+set_urgency() {
+    case "$1" in
+        low|0)      urgency=0 ;;
+        critical|2) urgency=2 ;;
+        *)          urgency=1 ;;
+    esac
+}
+
+# Only `transient` survives the trip: IpcHandler marshals a fixed argument list,
+# so arbitrary typed hints have nowhere to go. It is the one hint end-4 sends.
+set_hint() {
+    case "$1" in
+        *transient:1|*transient:true) transient=true ;;
+    esac
+}
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -a|--app-name)      app="${2:-}"; shift 2 ;;
+        -i|--icon)          icon="${2:-}"; shift 2 ;;
+        -u|--urgency)       set_urgency "${2:-}"; shift 2 ;;
+        -t|--expire-time)   expire="${2:--1}"; shift 2 ;;
+        -h|--hint)          set_hint "${2:-}"; shift 2 ;;
+        -c|--category)      shift 2 ;;
+        -A|--action)        shift 2 ;;
+        -e|--transient)     transient=true; shift ;;
+        -p|--print-id)      print_id=true; shift ;;
+        --app-name=*)       app="${1#*=}"; shift ;;
+        --icon=*)           icon="${1#*=}"; shift ;;
+        --urgency=*)        set_urgency "${1#*=}"; shift ;;
+        --expire-time=*)    expire="${1#*=}"; shift ;;
+        --hint=*)           set_hint "${1#*=}"; shift ;;
+        --category=*|--action=*) shift ;;
+        --)                 shift; while [ $# -gt 0 ]; do args+=("$1"); shift; done ;;
+        -*)                 shift ;;
+        *)                  args+=("$1"); shift ;;
+    esac
+done
+
+title="${args[0]-}"
+body="${args[1]-}"
+
+# 1. The shell's own notification server.
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp/quickshell-$UID}"
+export QML2_IMPORT_PATH="$ROOT/shims${QML2_IMPORT_PATH:+:$QML2_IMPORT_PATH}"
+
+for config in "${configs[@]}"; do
+    [ -f "$config" ] || continue
+    if id="$("$ROOT/bin/quickshell" -p "$config" ipc call notifications notify \
+                "$app" "$title" "$body" "$icon" "$urgency" "$expire" "$transient" 2>/dev/null)" \
+       && [ -n "$id" ]; then
+        $print_id && printf '%s\n' "$id"
+        exit 0
+    fi
+done
+
+# 2. Fallback: macOS Notification Center. It shows no markup, so strip the
+# HTML-ish tags Linux allows, and escape for AppleScript string literals.
+strip() { printf '%s' "$1" | sed -E 's/<[^>]*>//g'; }
+esc() { printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'; }
+
+script="display notification \"$(esc "$(strip "$body")")\" with title \"$(esc "$(strip "${title:-Notification}")")\""
+[ -n "$app" ] && script+=" subtitle \"$(esc "$app")\""
+
+osascript -e "$script"
+$print_id && printf '0\n'
+exit 0
