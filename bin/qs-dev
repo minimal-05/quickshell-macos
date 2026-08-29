@@ -44,6 +44,9 @@ fi
 # basename match would take out the other config's instance too.
 pkill -f "$CONFIG" 2>/dev/null
 sleep 1
+# The shell just killed leaves its media-control perl helper behind and its
+# runtime dir on disk; every restart adds one of each (see qs-reap).
+"$ROOT/bin/qs-reap" --quiet
 nohup "$ROOT/bin/qs" -p "$CONFIG" > "$LOG" 2>&1 &
 disown
 

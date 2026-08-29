@@ -27,3 +27,6 @@
 /shell
 /proof-*.png
 .DS_Store
+
+# qs-perf appends one line per run; local measurement log, not shared history.
+tests/perf-history.jsonl

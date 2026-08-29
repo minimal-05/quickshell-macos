@@ -41,6 +41,11 @@ if command -v yabai >/dev/null 2>&1; then
     yabai -m rule --add label=quickshell app="^quickshell$" manage=off >/dev/null 2>&1 || true
 fi
 
+# Previous instances leave orphan mediaremote-adapter.pl helpers and dead
+# runtime dirs behind (see qs-reap); a fresh start is the moment to clear them.
+# This used to live in qs-switch, which is gone.
+"$HERE/qs-reap" --quiet
+
 # Other applications' notifications reach the shell only through the bridge:
 # macOS has no notification-server protocol quickshell can claim, so it polls
 # Notification Center instead (see qs-notify-bridge). QS_RESPONSIBLE is who
