@@ -3,11 +3,12 @@ pragma Singleton
 // Quickshell.Services.UPower -- macOS compatibility shim (pure QML, no C++).
 //
 // Mirrors qs::service::upower::UPowerQml (quickshell/src/services/upower/core.hpp).
-// There is no UPower daemon on macOS; this polls pmset / ioreg / system_profiler
-// instead and shapes the result into the same object graph.
+// There is no UPower daemon on macOS; this reads the AppleSmartBattery node out
+// of the IOKit registry and shapes it into the same object graph.
 //
 // REAL:
-//   onBattery      -- `pmset -g batt` "Now drawing from 'Battery Power'"
+//   onBattery      -- ioreg ExternalConnected, which flips the instant the
+//                     adapter is plugged in
 //   displayDevice  -- the internal battery, fully populated (see UPowerDevice.qml)
 //   devices        -- an ObjectModel-SHAPED object exposing `.values`, holding the
 //                     one physical internal battery. Every consumer config on disk
@@ -23,6 +24,17 @@ pragma Singleton
 //   code yields an empty list instead of throwing.
 //   On a Mac with no battery, displayDevice stays ready:false / isLaptopBattery:false,
 //   which is exactly what upstream does when no battery is present.
+//
+// COST: the steady state is one `ioreg -r -c AppleSmartBattery -w0` every 30 s,
+// parsed here -- 0.03 spawns/s. Two things ioreg does not carry are read at
+// startup, then once an hour and whenever the adapter is plugged or unplugged:
+// Apple's own "Maximum Capacity" health figure (`system_profiler SPPowerDataType`)
+// and Low Power Mode (`pmset -g`, for PowerProfiles.qml). Low Power Mode has
+// separate battery and AC settings, so the plug event is the one moment the
+// effective value changes without the user opening System Settings.
+// ponytail: a plug-in shows up within one 30 s tick, so the bolt can lag by
+// that much. Upgrade path: P1-09 (IOPSNotificationCreateRunLoopSource in
+// src/cocoa) makes it event-driven with zero spawns.
 
 import QtQuick
 import Quickshell
@@ -58,127 +70,113 @@ Singleton {
     property bool onBattery: false
 
     // --- macOS backing ------------------------------------------------------
-    //
-    // Deliberately backslash-free: this is a JS template literal, where a stray
-    // "\n" or "\1" would be eaten by the JS lexer before sh ever saw it.
-
-    readonly property string _script: `
-R=$(ioreg -r -c AppleSmartBattery -w0 2>/dev/null)
-pick() { echo "$R" | grep -oE '"'"$1"'" *= *[0-9]+' | grep -oE '[0-9]+$' | head -1; }
-# ioreg publishes signed counters as unsigned 64-bit. Anything above 2^63 is a
-# negative number, and JS cannot un-wrap it once parseInt has rounded it to a
-# double, so it has to come back over the wire already signed.
-sgn() { [ -n "$1" ] || return 0; command -v bc >/dev/null 2>&1 || return 0; echo "if ($1 > 9223372036854775807) { $1 - 18446744073709551616 } else { $1 }" | bc 2>/dev/null; }
-echo "@@BATT"
-pmset -g batt 2>/dev/null
-echo "@@PMSET"
-pmset -g 2>/dev/null | grep -E 'lowpowermode|highpowermode'
-echo "@@IOREG"
-echo "$R" | grep -oE '"(AppleRawMaxCapacity|AppleRawCurrentCapacity|DesignCapacity|Voltage|CycleCount)" *= *[0-9]+'
-echo "$R" | grep -oE '"(IsCharging|ExternalConnected|FullyCharged)" *= *(Yes|No)'
-echo "@@AMP"
-sgn "$(pick InstantAmperage)"
-echo "@@POWER"
-sgn "$(pick BatteryPower)"
-echo "@@HEALTH"
-system_profiler SPPowerDataType -json 2>/dev/null | grep -oE 'health_maximum_capacity[^0-9]*[0-9]+' | head -1
-`
 
     // Read by PowerProfiles.qml so Low Power Mode is polled once, not twice.
     property int _lowPowerMode: 0
     property bool _hasHighPowerMode: false
 
-    // Line-based rather than index-based, so a command that emits no trailing
-    // newline cannot run its output into the next @@MARKER.
-    function _section(text: string, name: string): string {
-        const out = [];
-        let inside = false;
-        for (const line of text.split("\n")) {
-            if (line.startsWith("@@")) {
-                inside = line.slice(2).split(" ")[0] === name;
-                continue;
-            }
-            if (inside)
-                out.push(line);
+    // Apple's "Maximum Capacity" percentage from system_profiler; 0 until read.
+    property real _health: 0
+
+    // ioreg prints the node's own properties one per line as `"Key" = value`,
+    // while nested dictionaries (BatteryData, PowerTelemetryData) are squashed
+    // onto a single line as `"Key"=value`. Matching the spaced form anchored to a
+    // line keeps a nested "Voltage" or "DesignCapacity" from shadowing the live
+    // top-level one.
+    function _top(text: string, key: string): string {
+        const m = text.match(new RegExp('^\\s*"' + key + '" = (.+)$', "m"));
+        return m ? m[1].trim() : "";
+    }
+
+    function _num(text: string, key: string): real {
+        return root._signed(root._top(text, key));
+    }
+
+    // Tri-state: null means the Mac never published the key.
+    function _bool(text: string, key: string): var {
+        const v = root._top(text, key);
+        return v === "Yes" ? true : v === "No" ? false : null;
+    }
+
+    // A key inside a nested dictionary, e.g. BatteryPower in PowerTelemetryData.
+    function _nested(text: string, key: string): real {
+        const m = text.match(new RegExp('"' + key + '"=(\\d+)'));
+        return m ? root._signed(m[1]) : 0;
+    }
+
+    // ioreg publishes signed counters as unsigned 64-bit: a discharge current of
+    // -338 mA arrives as 18446744073709551278. A double cannot hold that exactly
+    // (the last eleven bits are gone by the time parseInt returns), so the
+    // subtraction from 2^64 is done on the decimal digits in two halves that
+    // each fit. 2^64 = 18446744073 * 1e9 + 709551616.
+    function _signed(digits: string): real {
+        if (!/^\d+$/.test(digits))
+            return 0;
+        const negative = digits.length === 20 || (digits.length === 19 && digits >= "9223372036854775808");
+        if (!negative)
+            return parseInt(digits, 10);
+        const split = digits.length - 9;
+        let hi = 18446744073 - parseInt(digits.slice(0, split), 10);
+        let lo = 709551616 - parseInt(digits.slice(split), 10);
+        if (lo < 0) {
+            lo += 1000000000;
+            hi -= 1;
         }
-        return out.join("\n");
-    }
-
-    // ioreg prints some keys more than once (live object then a cached copy);
-    // the first occurrence is the live one.
-    function _ioreg(section: string, key: string): real {
-        const m = section.match(new RegExp('"' + key + '" *= *(\\d+)'));
-        return m ? parseInt(m[1], 10) : 0;
-    }
-
-    // Tri-state on purpose: null means the Mac never published the key, which is
-    // what selects the pmset fallback in _apply.
-    function _ioregBool(section: string, key: string): var {
-        const m = section.match(new RegExp('"' + key + '" *= *(Yes|No)'));
-        return m ? m[1] === "Yes" : null;
+        return -(hi * 1000000000 + lo);
     }
 
     function _apply(text: string): void {
-        const batt = root._section(text, "BATT");
-        const pmset = root._section(text, "PMSET");
-        const ioreg = root._section(text, "IOREG");
-
-        root._lowPowerMode = (pmset.match(/lowpowermode\s+(\d+)/) ?? [0, "0"])[1] | 0;
-        root._hasHighPowerMode = /highpowermode/.test(pmset);
-
-        const pct = batt.match(/(\d+)%/);
-        const present = /present:\s*true/.test(batt);
-
-        // ioreg's own booleans beat parsing pmset's prose: they flip the instant
-        // the adapter is plugged in, and they tell "plugged in but held at 80% by
-        // optimised charging" -- which pmset words as "AC attached; not charging",
-        // indistinguishable from a real discharge to a percentage-only reader --
-        // apart from actually running off the battery. pmset stays the fallback
-        // for any Mac that does not publish them.
-        const external = root._ioregBool(ioreg, "ExternalConnected");
-
-        root.onBattery = external !== null ? !external : /Battery Power/.test(batt);
+        const present = root._bool(text, "BatteryInstalled") === true;
+        const external = root._bool(text, "ExternalConnected");
+        const wasOnBattery = root.onBattery;
+        root.onBattery = external === false;
 
         let state = UPowerDeviceState.Unknown;
         if (external !== null) {
-            if (external && root._ioregBool(ioreg, "FullyCharged"))
+            // FullyCharged is tested first: a full battery on AC reports
+            // IsCharging = No too, and "plugged in but held at 80% by optimised
+            // charging" is the PendingCharge case, which a percentage-only
+            // reader could not tell from a real discharge.
+            if (external && root._bool(text, "FullyCharged"))
                 state = UPowerDeviceState.FullyCharged;
-            else if (root._ioregBool(ioreg, "IsCharging"))
+            else if (root._bool(text, "IsCharging"))
                 state = UPowerDeviceState.Charging;
             else if (external)
                 state = UPowerDeviceState.PendingCharge;
             else
                 state = UPowerDeviceState.Discharging;
-        } else if (/not charging/i.test(batt))
-            // "not charging" must be tested before "charging" -- it contains it.
-            state = UPowerDeviceState.PendingCharge;
-        else if (/finishing charge|;\s*charging/i.test(batt))
-            state = UPowerDeviceState.Charging;
-        else if (/;\s*charged/i.test(batt))
-            state = UPowerDeviceState.FullyCharged;
-        else if (/;\s*discharging/i.test(batt))
-            state = UPowerDeviceState.Discharging;
-
-        const time = batt.match(/(\d+):(\d\d)\s+remaining/);
-        const seconds = time ? (parseInt(time[1], 10) * 3600 + parseInt(time[2], 10) * 60) : 0;
+        }
         const charging = state === UPowerDeviceState.Charging;
 
-        const volts = root._ioreg(ioreg, "Voltage") / 1000;
-        const rawMax = root._ioreg(ioreg, "AppleRawMaxCapacity");
-        const rawCur = root._ioreg(ioreg, "AppleRawCurrentCapacity");
-        const design = root._ioreg(ioreg, "DesignCapacity");
-        const milliamps = Math.abs(parseInt(root._section(text, "AMP").trim(), 10) || 0);
-        // Apple's own power telemetry, in milliwatts. InstantAmperage is a
-        // single instantaneous current sample and reads far low against it --
-        // -338 mA x 11.29 V = 3.8 W on the same poll that reports 5.7 W here,
-        // which is also what SystemLoad says the machine is drawing. Amperage
-        // taken alone swings the other way (-1340 mA = 15 W). Only the
-        // milliwatt figure is a real measurement, so the current stays a
-        // fallback for Macs that do not publish PowerTelemetryData.
-        const milliwatts = Math.abs(parseInt(root._section(text, "POWER").trim(), 10) || 0);
+        // CurrentCapacity/MaxCapacity are percent on Apple silicon (Max is
+        // always 100) and mAh on Intel; the ratio is the charge either way, and
+        // pmset -g batt rounds the same ratio for its percentage.
+        const max = root._num(text, "MaxCapacity");
+        const cur = root._num(text, "CurrentCapacity");
+        const rawMax = root._num(text, "AppleRawMaxCapacity");
+        const rawCur = root._num(text, "AppleRawCurrentCapacity");
+        const design = root._num(text, "DesignCapacity");
+        const volts = root._num(text, "Voltage") / 1000;
+        let fraction = max > 0 ? cur / max : rawMax > 0 ? rawCur / rawMax : 0;
+        fraction = Math.max(0, Math.min(1, fraction));
 
-        // Apple's own "maximum capacity" figure; falls back to raw capacity ratio.
-        let health = parseFloat(root._section(text, "HEALTH").replace(/[^0-9.]/g, ""));
+        // Minutes; 65535 is the firmware's "not yet estimated".
+        let minutes = root._num(text, "TimeRemaining");
+        if (minutes === 0 || minutes >= 65535)
+            minutes = root._num(text, charging ? "AvgTimeToFull" : "AvgTimeToEmpty");
+        const seconds = minutes > 0 && minutes < 65535 ? minutes * 60 : 0;
+
+        // Apple's own power telemetry, in milliwatts. InstantAmperage is a
+        // single instantaneous current sample and reads far low against it
+        // (-338 mA x 11.29 V = 3.8 W on the same poll that reports 5.7 W here,
+        // which is also what SystemLoad says the machine is drawing), so the
+        // current stays a fallback for Macs that do not publish
+        // PowerTelemetryData.
+        const milliwatts = Math.abs(root._nested(text, "BatteryPower"));
+        const milliamps = Math.abs(root._num(text, "InstantAmperage"));
+
+        // Apple's "Maximum Capacity" figure; falls back to raw capacity ratio.
+        let health = root._health;
         if (!(health > 0) && design > 0 && rawMax > 0)
             health = rawMax / design * 100;
 
@@ -187,9 +185,8 @@ system_profiler SPPowerDataType -json 2>/dev/null | grep -oE 'health_maximum_cap
         // service responds to flat-and-discharging by suspending the machine, so
         // one unreadable poll would put the system to sleep. Keeping the previous
         // reading is always the safer answer than inventing a zero.
-        if (present && !pct) return;
-
-        const percent = pct ? parseInt(pct[1], 10) : 0;
+        if (present && !(fraction > 0))
+            return;
 
         // Order matters. `isLaptopBattery` is derived from type + powerSupply, and
         // assignment below is key-by-key, so writing those two first would make the
@@ -198,10 +195,9 @@ system_profiler SPPowerDataType -json 2>/dev/null | grep -oE 'health_maximum_cap
         // measured value is therefore in place before the device claims to be a
         // battery at all.
         const fields = {
-            // pmset gives an integer percent; upstream percentage is a 0.0-1.0 fraction.
-            "percentage": percent / 100,
+            "percentage": fraction,
             "isPresent": present,
-            "ready": present && !!pct,
+            "ready": present,
             "state": state,
             "timeToEmpty": charging ? 0 : seconds,
             "timeToFull": charging ? seconds : 0,
@@ -210,16 +206,19 @@ system_profiler SPPowerDataType -json 2>/dev/null | grep -oE 'health_maximum_cap
             "changeRate": milliwatts > 0 ? milliwatts / 1000 : milliamps * volts / 1000,
             "healthPercentage": health > 0 ? health : 0,
             "healthSupported": health > 0,
-            "iconName": root._iconName(state, percent, present),
+            "iconName": root._iconName(state, Math.round(fraction * 100), present),
             // Last, for the reason above.
-            "type": UPowerDeviceType.Battery,
-            "powerSupply": true
+            "type": present ? UPowerDeviceType.Battery : UPowerDeviceType.Unknown,
+            "powerSupply": present
         };
 
         for (const target of [root.displayDevice, root.devices.internalBattery]) {
             for (const key in fields)
                 target[key] = fields[key];
         }
+
+        if (root.displayDevice.ready && wasOnBattery !== root.onBattery)
+            pmsetProc.running = true;
     }
 
     // UPower's own IconName values, so Quickshell.iconPath() lookups in consumer
@@ -242,22 +241,60 @@ system_profiler SPPowerDataType -json 2>/dev/null | grep -oE 'health_maximum_cap
     }
 
     Process {
-        id: proc
+        id: ioregProc
 
         running: true
-        command: ["sh", "-c", root._script]
+        command: ["ioreg", "-r", "-c", "AppleSmartBattery", "-w0"]
 
         stdout: StdioCollector {
             onStreamFinished: root._apply(text)
         }
     }
 
+    Process {
+        id: healthProc
+
+        running: true
+        command: ["system_profiler", "SPPowerDataType", "-json"]
+
+        stdout: StdioCollector {
+            onStreamFinished: {
+                // "81%" under sppower_battery_health_info; the JSON is nested a
+                // level deeper than a regex cares about.
+                const m = text.match(/"sppower_battery_health_maximum_capacity"\s*:\s*"?(\d+)/);
+                root._health = m ? parseInt(m[1], 10) : 0;
+            }
+        }
+    }
+
+    Process {
+        id: pmsetProc
+
+        running: true
+        command: ["pmset", "-g"]
+
+        stdout: StdioCollector {
+            onStreamFinished: {
+                root._lowPowerMode = (text.match(/lowpowermode\s+(\d+)/) ?? [0, "0"])[1] | 0;
+                root._hasHighPowerMode = /highpowermode/.test(text);
+            }
+        }
+    }
+
     Timer {
-        // ponytail: a plug-in shows up within one tick. `pmset -g pslog` streams
-        // the change instantly; wire it up if 10s of stale bolt ever grates.
-        interval: 10000
+        interval: 30000
         running: true
         repeat: true
-        onTriggered: proc.running = true
+        onTriggered: ioregProc.running = true
+    }
+
+    Timer {
+        interval: 3600000
+        running: true
+        repeat: true
+        onTriggered: {
+            healthProc.running = true;
+            pmsetProc.running = true;
+        }
     }
 }
