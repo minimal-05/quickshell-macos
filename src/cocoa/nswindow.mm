@@ -420,16 +420,25 @@ void registerPanel(WId view, PanelLayer layer, bool focusable) {
 	applyConfig(view, config);
 }
 
-bool processOwnsPanels() { return !panelConfigs().isEmpty(); }
+namespace {
+bool& shellProcess() {
+	static auto shell = false;
+	return shell;
+}
+} // namespace
+
+// Sticky: a hidden panel releases its native window (see
+// CocoaPanelWindow::releaseHiddenGraphics), so the registry can be empty
+// between shows without the process having stopped being a shell.
+bool processOwnsPanels() { return shellProcess(); }
 
 void becomeShellProcess() {
 	// A process that owns panels is a shell: no Dock icon, no menu bar, never
 	// the active application. A process that owns none is an ordinary window
 	// (settings, the welcome screen) and must stay a regular app, or the user
 	// has no menu bar to quit it from and their cmd-Q lands on the shell.
-	static auto policyApplied = false;
-	if (policyApplied) return;
-	policyApplied = true;
+	if (shellProcess()) return;
+	shellProcess() = true;
 
 	setAccessoryActivationPolicy();
 	stripQuitKeyEquivalent();

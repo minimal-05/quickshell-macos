@@ -46,6 +46,13 @@ class CocoaPanelWindow: public ProxyWindowBase {
 	QSDOC_HIDE Q_PROPERTY(Margins margins READ margins WRITE setMargins NOTIFY marginsChanged);
 	QSDOC_HIDE Q_PROPERTY(bool aboveWindows READ aboveWindows WRITE setAboveWindows NOTIFY aboveWindowsChanged);
 	QSDOC_HIDE Q_PROPERTY(bool focusable READ focusable WRITE setFocusable NOTIFY focusableChanged);
+	/// Whether the panel plays the compositor's open/close animation.
+	///
+	/// On Hyprland every layer surface pops in and out (end-4's `layersIn` /
+	/// `layersOut`), which this backend reproduces. Set false for a panel that
+	/// needs `visible: false` to take effect at once rather than after the
+	/// 270 ms close. Defaults to true.
+	Q_PROPERTY(bool animate READ animate WRITE setAnimate NOTIFY animateChanged);
 	// clang-format on
 	QML_ELEMENT;
 
@@ -87,6 +94,9 @@ public:
 	[[nodiscard]] bool focusable() const { return this->bFocusable; }
 	void setFocusable(bool focusable) { this->bFocusable = focusable; }
 
+	[[nodiscard]] bool animate() const { return this->mAnimate; }
+	void setAnimate(bool animate);
+
 	/// Pin the window to a specific native level, overriding the coarse
 	/// aboveWindows boolean. Set by the WlrLayershell attached object so
 	/// layer-shell configs land on the layer they asked for.
@@ -99,6 +109,7 @@ signals:
 	QSDOC_HIDE void marginsChanged();
 	QSDOC_HIDE void aboveWindowsChanged();
 	QSDOC_HIDE void focusableChanged();
+	void animateChanged();
 
 private slots:
 	void cocoaInit();
@@ -114,6 +125,9 @@ private:
 
 	[[nodiscard]] PanelAnimation openCloseAnimation() const;
 	void finishOpenCloseAnimation();
+
+	/// Release the native window behind a panel that has stayed hidden.
+	void releaseHiddenGraphics();
 
 public:
 	/// Post a synthetic leave when the pointer is no longer over this panel.
@@ -147,6 +161,18 @@ private:
 	// can be resized and repositioned freely while it plays.
 	QTimer mAnimationTimer;
 	bool mClosing = false;
+	bool mAnimate = true;
+
+	// Hiding a panel does not free what it holds on the GPU: measured on a
+	// 600pt full-height panel, Qt's own release (non-persistent scene graph and
+	// graphics, releaseResources) dropped IOAccelerator from 3.9 MB to 0.4 MB
+	// but one of the two 10 MB Metal drawables stayed mapped for as long as the
+	// NSWindow existed, whatever was done to the CAMetalLayer. Two hidden
+	// full-height panels held 113 MB that way. Releasing the platform window
+	// itself is what frees it, so a panel that stays hidden past this timer
+	// destroys its native window and gets a fresh one on show. The delay keeps
+	// a hover popup that reopens at once from paying for a new window each time.
+	QTimer mReleaseTimer;
 
 	bool mHasLayerOverride = false;
 	bool mPointerInside = false;
@@ -175,6 +201,8 @@ private:
 
 class CocoaPanelInterface: public PanelWindowInterface {
 	Q_OBJECT;
+	/// See CocoaPanelWindow::animate.
+	Q_PROPERTY(bool animate READ animate WRITE setAnimate NOTIFY animateChanged);
 
 public:
 	explicit CocoaPanelInterface(QObject* parent = nullptr);
@@ -203,8 +231,14 @@ public:
 	void setFocusable(bool focusable) override;
 	// NOLINTEND
 
+	[[nodiscard]] bool animate() const;
+	void setAnimate(bool animate);
+
 	/// The WlrLayershell attached object for this panel, created on first use.
 	[[nodiscard]] CocoaLayershell* layershell();
+
+signals:
+	void animateChanged();
 
 private:
 	CocoaPanelWindow* panel;

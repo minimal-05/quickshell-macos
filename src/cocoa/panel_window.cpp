@@ -26,6 +26,14 @@
 
 namespace qs::cocoa {
 
+namespace {
+// How long a panel stays hidden before its native window is released. Long
+// enough that a bar popup flickering off and on under the pointer keeps its
+// window; short enough that a closed sidebar is not holding 50 MB a minute
+// later. See CocoaPanelWindow::mReleaseTimer.
+constexpr auto RELEASE_HIDDEN_MS = 1000;
+} // namespace
+
 // macOS has no public API for reserving screen edges, so exclusive zones only
 // apply between quickshell's own panels. Other applications will happily draw
 // underneath a bar.
@@ -131,6 +139,15 @@ CocoaPanelWindow::CocoaPanelWindow(QObject* parent): ProxyWindowBase(parent) {
 	    this,
 	    &CocoaPanelWindow::finishOpenCloseAnimation
 	);
+
+	this->mReleaseTimer.setSingleShot(true);
+	this->mReleaseTimer.setInterval(RELEASE_HIDDEN_MS);
+	QObject::connect(
+	    &this->mReleaseTimer,
+	    &QTimer::timeout,
+	    this,
+	    &CocoaPanelWindow::releaseHiddenGraphics
+	);
 }
 
 namespace {
@@ -144,6 +161,7 @@ namespace {
 //   close: layersOut 240ms vs fadeLayersOut 270ms
 constexpr auto ANIMATION_OPEN_MS = 270;
 constexpr auto ANIMATION_CLOSE_MS = 270;
+
 
 } // namespace
 
@@ -282,8 +300,48 @@ PanelAnimation CocoaPanelWindow::openCloseAnimation() const {
 	// popin scales about the centre and never leaves the panel's resting area,
 	// which is also why it is safe for a surface the pointer is hovering: unlike
 	// a slide, it does not move out from under the cursor.
-	if (this->window == nullptr) return PanelAnimation::None;
+	if (this->window == nullptr || !this->mAnimate) return PanelAnimation::None;
 	return PanelAnimation::Popin;
+}
+
+void CocoaPanelWindow::setAnimate(bool animate) {
+	if (animate == this->mAnimate) return;
+	this->mAnimate = animate;
+
+	// A close that was mid-animation when animation was switched off finishes
+	// now rather than at the end of a transition nobody asked for.
+	if (!animate && this->mClosing) this->finishOpenCloseAnimation();
+
+	emit this->animateChanged();
+}
+
+void CocoaPanelWindow::releaseHiddenGraphics() {
+	if (this->window == nullptr || this->window->handle() == nullptr) return;
+	if (this->window->isVisible()) return;
+
+	// The registry holds the NSView by address; drop it before the view goes.
+	if (this->mRegisteredView != 0) {
+		unregisterPanel(this->mRegisteredView);
+		this->mRegisteredView = 0;
+	}
+
+	// QWindow::destroy keeps the QQuickWindow and its content item -- every
+	// binding and every QML object stays -- and drops the NSWindow. The render
+	// loop is told to hide on the way, and only lets go of the scene graph and
+	// the swapchain if neither is persistent at that moment: with Qt's
+	// defaults the QMetalSwapChain outlived the window and kept every drawable
+	// of the old CAMetalLayer mapped (measured: nothing freed, and the pool
+	// doubled on re-show). The flags are put back afterwards so a panel that
+	// hides and shows within the timer keeps everything and pays nothing.
+	this->window->setPersistentSceneGraph(false);
+	this->window->setPersistentGraphics(false);
+	this->window->destroy();
+	this->window->setPersistentSceneGraph(true);
+	this->window->setPersistentGraphics(true);
+
+	// The next show creates a new platform window, and the surface event
+	// filter runs cocoaInit against it the way it did for the first.
+	qInfo("cocoa: panel released its native window");
 }
 
 void CocoaPanelWindow::setVisibleDirect(bool visible) {
@@ -298,6 +356,7 @@ void CocoaPanelWindow::setVisibleDirect(bool visible) {
 		this->mClosing = false;
 
 		if (!visible && this->bFocusable.value()) unfocusPanel();
+		if (visible) this->mReleaseTimer.stop();
 
 		this->ProxyWindowBase::setVisibleDirect(visible);
 
@@ -309,6 +368,7 @@ void CocoaPanelWindow::setVisibleDirect(bool visible) {
 			if (this->bFocusable.value()) focusPanel(this->window->winId());
 		}
 
+		if (!visible) this->mReleaseTimer.start();
 		return;
 	}
 
@@ -318,6 +378,7 @@ void CocoaPanelWindow::setVisibleDirect(bool visible) {
 		// Already open and not on its way out: nothing to play, and an open
 		// animation still in flight must be left to finish.
 		if (this->isVisibleDirect() && !reopening) {
+			this->mReleaseTimer.stop();
 			this->ProxyWindowBase::setVisibleDirect(true);
 			return;
 		}
@@ -326,6 +387,7 @@ void CocoaPanelWindow::setVisibleDirect(bool visible) {
 		// panel that just came back.
 		this->mAnimationTimer.stop();
 		this->mClosing = false;
+		this->mReleaseTimer.stop();
 
 		this->ProxyWindowBase::setVisibleDirect(true);
 		if (this->window == nullptr || this->window->handle() == nullptr) return;
@@ -362,15 +424,19 @@ void CocoaPanelWindow::setVisibleDirect(bool visible) {
 void CocoaPanelWindow::finishOpenCloseAnimation() {
 	this->mAnimationTimer.stop();
 
+	auto closed = false;
 	if (this->mClosing) {
 		this->mClosing = false;
 		this->ProxyWindowBase::setVisibleDirect(false);
+		closed = true;
 	}
 
 	// Drop the held final scale and restore full opacity.
 	if (this->window != nullptr && this->window->handle() != nullptr) {
 		settlePanel(this->window->winId());
 	}
+
+	if (closed) this->mReleaseTimer.start();
 
 	this->updateDimensions();
 }
@@ -396,6 +462,7 @@ void CocoaPanelWindow::connectWindow() {
 
 	this->window->setFlag(Qt::FramelessWindowHint);
 	this->updateFocusable();
+
 
 	if (this->window->handle() != nullptr) {
 		this->cocoaInit();
@@ -601,6 +668,7 @@ CocoaPanelInterface::CocoaPanelInterface(QObject* parent)
 	QObject::connect(this->panel, &CocoaPanelWindow::exclusionModeChanged, this, &CocoaPanelInterface::exclusionModeChanged);
 	QObject::connect(this->panel, &CocoaPanelWindow::aboveWindowsChanged, this, &CocoaPanelInterface::aboveWindowsChanged);
 	QObject::connect(this->panel, &CocoaPanelWindow::focusableChanged, this, &CocoaPanelInterface::focusableChanged);
+	QObject::connect(this->panel, &CocoaPanelWindow::animateChanged, this, &CocoaPanelInterface::animateChanged);
 	// clang-format on
 }
 
@@ -633,6 +701,7 @@ proxyPair(qint32, exclusiveZone, setExclusiveZone);
 proxyPair(ExclusionMode::Enum, exclusionMode, setExclusionMode);
 proxyPair(bool, focusable, setFocusable);
 proxyPair(bool, aboveWindows, setAboveWindows);
+proxyPair(bool, animate, setAnimate);
 
 #undef proxyPair
 // NOLINTEND
