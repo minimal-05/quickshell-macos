@@ -2,21 +2,21 @@ import QtQuick
 
 // Quickshell.Services.Pipewire.PwNodeAudio - macOS compatibility shim.
 //
-// REAL, for the node that is currently the default output or input device:
-//   - `volume` (0.0-1.0 REAL, as upstream; macOS reports 0-100 INT and the
-//     owning Pipewire singleton does the /100 and *100 conversion)
-//   - `muted` for the default *output* (AppleScript `output muted`)
+// REAL, on every node (the HAL hands out any device's controls, not only the
+// default's):
+//   - `volume` (0.0-1.0 REAL, as upstream; the CoreAudio scalar is already
+//     in that range, so no conversion happens anywhere)
+//   - `muted`
 //   - `volumes`, kept in sync with `volume` across `channels`
-// INERT / degraded:
-//   - `muted` on the default *input*: AppleScript has no input mute, so the
-//     Pipewire singleton emulates it by parking input volume at 0.
-//   - every non-default device node: CoreAudio will not hand out another
-//     device's scalar volume through any of the CLI tools available here, so
-//     those nodes read 0 / false and writes to them are dropped.
+// DEGRADED:
+//   - a device without a software volume (HDMI, AirPlay, continuity mics)
+//     reads 0 / false and drops writes.
+//   - `muted` on a device without a hardware mute control is emulated by
+//     the singleton (volume parked at 0, restored on unmute).
 //
 // Writes are reported to the owner through volumeRequested/mutedRequested
 // rather than performed here, so that this file stays a dumb value holder.
-// `__push` is how the owner writes back polled values without those writes
+// `__push` is how the owner writes HAL values in without those writes
 // bouncing straight back out as a new request.
 QtObject {
     id: root
@@ -33,8 +33,8 @@ QtObject {
     signal volumeRequested(real volume)
     signal mutedRequested(bool muted)
 
-    // True while the owner is pushing polled state in; suppresses the
-    // requested() signals so polling never turns into a write loop.
+    // True while the owner is pushing HAL state in; suppresses the
+    // requested() signals so a readback never turns into a write loop.
     property bool __internal: false
 
     onVolumeChanged: {

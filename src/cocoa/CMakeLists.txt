@@ -5,6 +5,7 @@ qt_add_library(quickshell-cocoa STATIC
 	appicon.mm
 	focusgrab.mm
 	panel_window.cpp
+	coreaudio.mm # round2/native-audio
 )
 
 qt_add_qml_module(quickshell-cocoa
@@ -19,6 +20,8 @@ add_library(quickshell-cocoa-init OBJECT init.cpp)
 
 # QuartzCore for CAMediaTimingFunction, used by the panel open/close animations.
 target_link_libraries(quickshell-cocoa PRIVATE Qt::Quick "-framework AppKit" "-framework QuartzCore")
+# CoreAudio for the device HAL, AudioToolbox for the virtual main volume selector. round2/native-audio
+target_link_libraries(quickshell-cocoa PRIVATE "-framework CoreAudio" "-framework AudioToolbox") # round2/native-audio
 target_link_libraries(quickshell-cocoa-init PRIVATE Qt::Quick Qt::Qml "-framework AppKit")
 
 target_link_libraries(quickshell PRIVATE quickshell-cocoaplugin quickshell-cocoa-init)
