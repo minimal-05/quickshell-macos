@@ -16,7 +16,7 @@
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SRC="${QS_SRC:-$ROOT}"
-CONFIG="${QS_CONFIG:-$ROOT/examples/end4-ii/shell.qml}"
+CONFIG="${QS_CONFIG:-$HOME/.config/quickshell/shell.qml}"
 LOG=/tmp/qs-dev.log
 
 export PATH="$ROOT/bin:/opt/homebrew/bin:$PATH"

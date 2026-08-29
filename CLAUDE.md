@@ -9,14 +9,22 @@ commits on top, not a patch.
 - **C++ / Cocoa backend** → `src/cocoa/`. Rebuild with `bin/qs-build`.
 - **Launchers, shims, dev loop** → `bin/`, `shims/`.
 - **Shell config (bar, pills, services)** is *not* here. It lives in
-  `~/.config/quickshell`, in the `darwin-dotfiles` repo. `./shell` is a symlink
-  to it — do not replace it with a directory.
+  `~/.config/quickshell`, in the `darwin-dotfiles` repo. Refer to it by that
+  path in full — the `./shell` and `./examples/` symlinks that used to stand in
+  for it are gone, and nothing here should grow a new one.
 
 ## Not committed, but on disk
 
-`bin/quickshell` (built binary), `build/`, and `examples/end4-ii` (end-4's
-illogical-impulse config — third party, its own licence). All gitignored on
-purpose; don't "fix" them by adding them.
+`bin/quickshell` (built binary) and `build/`. Both gitignored on purpose; don't
+"fix" them by adding them.
+
+`examples/` used to hold end-4's config, untracked, with no history. On
+2026-08-29 it moved to `~/.config/quickshell`, where it is tracked in
+`darwin-dotfiles`, and the directory was removed rather than left as a symlink.
+Write paths to the config as `$HOME/.config/quickshell`.
+
+`bin/qs` is a two-line exec wrapper around `bin/quickshell`, not a symlink:
+end-4's QML calls `qs` by bare name in a dozen places and needs it on PATH.
 
 ## Gotchas
 
