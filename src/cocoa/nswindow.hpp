@@ -78,6 +78,20 @@ bool processOwnsPanels();
 /// window.
 void applyUndecoratedChrome(WId view);
 
+/// Clear the native background of a transparent popup window.
+///
+/// registerPanel() does this for panels, but a PopupWindow is not a panel and
+/// never goes through it, so nothing ever cleared NSWindow.opaque for one. Qt
+/// gives the surface an alpha channel when `color` is translucent but leaves
+/// the NSWindow opaque, and the window then paints its default background --
+/// which is why a `color: "transparent"` popup showed up as a slab of dark
+/// grey the size of the whole popup window, not the card drawn inside it.
+///
+/// Applies to popups only. A transparent popup draws its own rounded card and
+/// its own shadow, so the native shadow goes too; it would otherwise outline
+/// the invisible window rectangle.
+void applyPopupChrome(WId view);
+
 /// Stop tracking a window previously passed to registerPanel.
 void unregisterPanel(WId view);
 

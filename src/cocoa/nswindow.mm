@@ -344,6 +344,18 @@ void applyUndecoratedChrome(WId view) {
 	}
 }
 
+void applyPopupChrome(WId view) {
+	auto* window = windowFor(view);
+	if (window == nil) return;
+
+	// The same three lines applyConfig() uses on panels. Popups are transient
+	// and are re-applied on every surface creation and expose, so unlike panels
+	// they need no entry in panelConfigs() and no reapply observer.
+	window.opaque = NO;
+	window.backgroundColor = NSColor.clearColor;
+	window.hasShadow = NO;
+}
+
 void unregisterPanel(WId view) { panelConfigs().remove(view); }
 
 void setAccessoryActivationPolicy() {
