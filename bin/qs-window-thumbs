@@ -6,7 +6,12 @@
 # does have one: it takes a CoreGraphics window id, which is exactly what yabai's
 # window id is. end-4 keys windows by a hex `address`, so that is the file name.
 #
-#   qs-window-thumbs          capture into $XDG_RUNTIME_DIR/quickshell/thumbs
+#   qs-window-thumbs          capture every window into
+#                             $XDG_RUNTIME_DIR/quickshell/thumbs, prune the dead
+#   qs-window-thumbs ID...    capture just these window ids, prune nothing
+#
+# The path of each thumbnail written is printed, one per line. ScreencopyView on
+# macOS drives the second form, one window at a time, and binds what it prints.
 #
 # Writes are atomic (capture to .tmp, then mv) so the overview never samples a
 # half-written file.
@@ -19,7 +24,15 @@ mkdir -p "$DIR"
 
 MAX_PX="${QS_THUMB_PX:-640}"
 
-ids="$(yabai -m query --windows 2>/dev/null | jq -r '.[] | select(."is-minimized" == false) | .id')"
+# Explicit ids skip the prune: previews are captured one window at a time, and a
+# prune driven by a single id would delete every other window's thumbnail.
+if [ "$#" -gt 0 ]; then
+    ids="$*"
+    prune=0
+else
+    ids="$(yabai -m query --windows 2>/dev/null | jq -r '.[] | select(."is-minimized" == false) | .id')"
+    prune=1
+fi
 [ -n "$ids" ] || exit 0
 
 live=""
@@ -31,7 +44,10 @@ for id in $ids; do
     [ -s "$tmp" ] || { rm -f "$tmp"; continue; }
     sips -Z "$MAX_PX" "$tmp" >/dev/null 2>&1
     mv -f "$tmp" "$DIR/$hex.png"
+    echo "$DIR/$hex.png"
 done
+
+[ "$prune" = 1 ] || exit 0
 
 # Drop thumbnails for windows that no longer exist.
 for f in "$DIR"/*.png; do
