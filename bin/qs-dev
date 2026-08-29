@@ -46,6 +46,9 @@ fi
 
 pkill -f "$(basename "$CONFIG")" 2>/dev/null
 sleep 1
+# The shell just killed leaves its media-control perl helper behind and its
+# runtime dir on disk; every restart adds one of each (see qs-reap).
+"$ROOT/bin/qs-reap" --quiet
 nohup "$ROOT/bin/quickshell" -p "$CONFIG" > "$LOG" 2>&1 &
 disown
 

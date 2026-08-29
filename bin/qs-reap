@@ -1,0 +1,183 @@
+#!/usr/bin/env python3
+"""Reap what a dead quickshell instance leaves behind.
+
+    qs-reap [--dry-run] [--quiet]
+
+Two leaks, both from restarting the shell many times a day:
+
+  * mediaremote-adapter.pl: the shim's `media-control stream` keeps a perl
+    helper alive for the life of the shell, and killing the shell reparents it
+    to launchd instead of ending it (~9 MB RSS each, one per restart). Any
+    adapter whose ancestry has no live quickshell is killed.
+
+  * $XDG_RUNTIME_DIR/quickshell/by-id/<id>: one dir per instance, with the
+    ipc socket and a log that can reach a few hundred KB, plus symlinks under
+    by-pid, by-shell/<shell-id>/ and by-path. quickshell only removes these
+    for instances it decides are dead when it lists them, which nothing on
+    macOS does routinely. Liveness is tested the way upstream's
+    QsPaths::checkLock does: F_GETLK on instance.lock; the running instance
+    holds a write lock, a dead one does not. Dirs younger than 30 s are left
+    alone so an instance that has not locked yet is never pruned mid-start.
+
+Prints before/after counts; exits 0 even when there was nothing to do.
+"""
+
+import fcntl
+import os
+import re
+import shutil
+import signal
+import struct
+import subprocess
+import sys
+import time
+
+RUNTIME = os.environ.get("XDG_RUNTIME_DIR") or f"/tmp/quickshell-{os.getuid()}"
+QS_DIR = os.path.join(RUNTIME, "quickshell")
+GRACE_S = 30
+F_WRLCK, F_UNLCK = 3, 2
+ADAPTER = re.compile(r"^\S*/perl\s+\S*/media-control/mediaremote-adapter\.pl(\s|$)")
+
+
+def ps_rows():
+    out = subprocess.run(["ps", "-axo", "pid=,ppid=,args="], capture_output=True, text=True).stdout
+    rows = []
+    for line in out.splitlines():
+        parts = line.split(None, 2)
+        if len(parts) >= 2:
+            rows.append((int(parts[0]), int(parts[1]), parts[2] if len(parts) > 2 else ""))
+    return rows
+
+
+def orphan_adapters(rows):
+    parent = {pid: ppid for pid, ppid, _ in rows}
+    is_qs = {pid for pid, _, args in rows if " -p " in args and "/quickshell" in args.split(" ", 1)[0]}
+
+    def under_quickshell(pid):
+        seen = set()
+        while pid > 1 and pid not in seen:
+            if pid in is_qs:
+                return True
+            seen.add(pid)
+            pid = parent.get(pid, 1)
+        return False
+
+    # Match only the interpreter running the script, not any process whose
+    # argv merely mentions it (an editor, a shell heredoc, this reaper's own
+    # ancestors), and never anything in our own ancestry.
+    mine = set()
+    pid = os.getpid()
+    while pid > 1 and pid not in mine:
+        mine.add(pid)
+        pid = parent.get(pid, 1)
+    return [pid for pid, ppid, args in rows
+            if ADAPTER.match(args) and pid not in mine and not under_quickshell(ppid)]
+
+
+def lock_held(path):
+    """True if some process holds a write lock on instance.lock (upstream's liveness test)."""
+    try:
+        fd = os.open(path, os.O_RDONLY)
+    except OSError:
+        return False
+    try:
+        # struct flock on macOS: off_t l_start, off_t l_len, pid_t l_pid, short l_type, short l_whence
+        probe = struct.pack("qqihh", 0, 0, 0, F_WRLCK, os.SEEK_SET)
+        res = fcntl.fcntl(fd, fcntl.F_GETLK, probe)
+        return struct.unpack("qqihh", res)[3] != F_UNLCK
+    except OSError:
+        return True  # cannot tell: treat as alive, never prune on doubt
+    finally:
+        os.close(fd)
+
+
+def dead_instances():
+    by_id = os.path.join(QS_DIR, "by-id")
+    if not os.path.isdir(by_id):
+        return []
+    now = time.time()
+    dead = []
+    for name in os.listdir(by_id):
+        d = os.path.join(by_id, name)
+        if not os.path.isdir(d) or os.path.islink(d):
+            continue
+        try:
+            if now - os.stat(d).st_mtime < GRACE_S:
+                continue
+        except OSError:
+            continue
+        if not lock_held(os.path.join(d, "instance.lock")):
+            dead.append(d)
+    return dead
+
+
+def dangling_links():
+    """Symlinks under by-pid, by-path, by-shell/* whose target is gone."""
+    out = []
+    for sub in ("by-pid", "by-path"):
+        p = os.path.join(QS_DIR, sub)
+        if os.path.isdir(p):
+            for n in os.listdir(p):
+                f = os.path.join(p, n)
+                if os.path.islink(f) and not os.path.exists(f):
+                    out.append(f)
+    by_shell = os.path.join(QS_DIR, "by-shell")
+    if os.path.isdir(by_shell):
+        for sid in os.listdir(by_shell):
+            sd = os.path.join(by_shell, sid)
+            if os.path.isdir(sd) and not os.path.islink(sd):
+                for n in os.listdir(sd):
+                    f = os.path.join(sd, n)
+                    if os.path.islink(f) and not os.path.exists(f):
+                        out.append(f)
+    return out
+
+
+def empty_shell_dirs():
+    by_shell = os.path.join(QS_DIR, "by-shell")
+    if not os.path.isdir(by_shell):
+        return []
+    return [os.path.join(by_shell, s) for s in os.listdir(by_shell)
+            if os.path.isdir(os.path.join(by_shell, s)) and not os.listdir(os.path.join(by_shell, s))]
+
+
+def main(argv):
+    dry = "--dry-run" in argv
+    quiet = "--quiet" in argv
+    if "-h" in argv or "--help" in argv:
+        print(__doc__.strip()); return 0
+
+    rows = ps_rows()
+    adapters = orphan_adapters(rows)
+    dead = dead_instances()
+    before = (len(adapters), len(dead))
+
+    if not dry:
+        for pid in adapters:
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+        for d in dead:
+            shutil.rmtree(d, ignore_errors=True)
+        for f in dangling_links():
+            try:
+                os.unlink(f)
+            except OSError:
+                pass
+        for d in empty_shell_dirs():
+            try:
+                os.rmdir(d)
+            except OSError:
+                pass
+
+    after = (len(orphan_adapters(ps_rows())), len(dead_instances())) if not dry else before
+    if not quiet or before != (0, 0):
+        verb = "would reap" if dry else "reaped"
+        print(f"qs-reap: orphan adapters {before[0]} -> {after[0]}, "
+              f"dead instance dirs {before[1]} -> {after[1]} ({verb}, {QS_DIR})")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

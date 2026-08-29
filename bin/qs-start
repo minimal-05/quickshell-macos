@@ -33,6 +33,10 @@ fi
 # bridge is backgrounded and reparented to launchd before it could look itself.
 # It waits for the shell to appear, locks itself against duplicates, and exits
 # once the shell is gone, so exec'ing over this script leaves no orphan.
+# Previous instances leave orphan mediaremote-adapter.pl helpers and dead
+# runtime dirs behind (see qs-reap); a fresh start is the moment to clear them.
+"$HERE/qs-reap" --quiet
+
 export QS_RESPONSIBLE="$(ps -o comm= -p "$PPID" 2>/dev/null | tail -1)"
 nohup "$HERE/qs-notify-bridge" >>"${TMPDIR:-/tmp}/qs-notify-bridge.log" 2>&1 &
 disown
