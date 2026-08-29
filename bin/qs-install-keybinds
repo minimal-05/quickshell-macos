@@ -1,20 +1,32 @@
 #!/bin/bash
-# Add (or remove) the shell's skhd bindings.
+# Install the shell's keybindings.
 #
-#   qs-install-keybinds           add the block to ~/.config/skhd/skhdrc
-#   qs-install-keybinds --remove  take it back out
+#   qs-install-keybinds           seed ~/.config/quickshell-macos/shortcuts.json,
+#                                 put the skhd block in ~/.config/skhd/skhdrc
+#   qs-install-keybinds --remove  take the skhd block back out
 #
-# end-4 binds these to SUPER on Linux through Hyprland's global-shortcut
-# protocol. macOS has no equivalent, so they go through skhd and call the
-# shell's IPC socket. ctrl+alt+cmd is used as the Super stand-in because that is
-# the prefix the rest of your skhdrc already uses.
+# end-4 binds its actions to SUPER through Hyprland's global-shortcut protocol.
+# On macOS the shell registers those chords itself (Quickshell.Cocoa.Hotkeys,
+# Carbon RegisterEventHotKey) from the table in src/cocoa/shortcuts.json --
+# compiled in, so they work without this script -- overlaid by
+# ~/.config/quickshell-macos/shortcuts.json. This copies the default table
+# there once, as the file to edit; delete it to go back to the defaults.
+# ctrl+alt+cmd stands in for SUPER because that is the prefix the rest of your
+# skhdrc uses.
 #
-# Nothing here touches your existing bindings, and a backup is taken first.
+# skhd keeps only what is not a GlobalShortcut: opening the settings window.
+# Earlier versions wrote a `qs-ipc <target> toggle` line per action here; those
+# are stripped, because the shell leaves any chord skhdrc binds to skhd, and a
+# stale line would keep an action on the slow IPC path (or fire it twice).
+#
+# Nothing here touches your own bindings, and a backup is taken first.
+# Restart the shell afterwards: the chord table is read once at startup.
 
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RC="${SKHD_RC:-$HOME/.config/skhd/skhdrc}"
+TABLE="${QS_SHORTCUTS:-$HOME/.config/quickshell-macos/shortcuts.json}"
 BEGIN="# --- quickshell bindings (managed by qs-install-keybinds) ---"
 END="# --- end quickshell bindings ---"
 
@@ -32,27 +44,21 @@ cp "$RC" "$RC.bak.$(date +%s)"
 
 if [ "${1:-}" = "--remove" ]; then
     strip_block > "$RC.tmp" && mv "$RC.tmp" "$RC"
-    echo "removed quickshell bindings from $RC"
+    echo "removed quickshell bindings from $RC ($TABLE left alone)"
 else
+    if [ -f "$TABLE" ]; then
+        echo "kept $TABLE (delete it to reseed from $ROOT/src/cocoa/shortcuts.json)"
+    else
+        mkdir -p "$(dirname "$TABLE")"
+        cp "$ROOT/src/cocoa/shortcuts.json" "$TABLE"
+        echo "wrote $TABLE"
+    fi
     strip_block > "$RC.tmp"
-    cat >> "$RC.tmp" <<EOF
+    cat >> "$RC.tmp" <<EOF2
 $BEGIN
 ctrl + alt + cmd - i        : $ROOT/bin/qs-settings
-ctrl + alt + cmd - tab      : $ROOT/bin/qs-ipc search workspacesToggle
-ctrl + alt + cmd - space    : $ROOT/bin/qs-ipc search toggle
-cmd - space                 : $ROOT/bin/qs-ipc search toggle
-ctrl + alt + cmd - a        : $ROOT/bin/qs-ipc sidebarLeft toggle
-ctrl + alt + cmd - s        : $ROOT/bin/qs-ipc sidebarRight toggle
-ctrl + alt + cmd - m        : $ROOT/bin/qs-ipc mediaControls toggle
-ctrl + alt + cmd - j        : $ROOT/bin/qs-ipc bar toggle
-ctrl + alt + cmd - k        : $ROOT/bin/qs-ipc osk toggle
-ctrl + alt + cmd - p        : $ROOT/bin/qs-ipc wallpaperSelector toggle
-ctrl + alt + cmd - e        : $ROOT/bin/qs-ipc session toggle
-ctrl + alt + cmd - 0x2C     : $ROOT/bin/qs-ipc cheatsheet toggle
-ctrl + alt + cmd - w        : $ROOT/bin/qs-ipc overlay toggle
-ctrl + alt + cmd + shift - s: $ROOT/bin/qs-ipc region screenshot
 $END
-EOF
+EOF2
     mv "$RC.tmp" "$RC"
     echo "added quickshell bindings to $RC"
 fi

@@ -187,15 +187,16 @@ def shortcut_binds():
     except (OSError, ValueError):
         return []
     out = []
-    for name, chord in (table.items() if isinstance(table, dict) else []):
-        if not isinstance(chord, str) or not chord.strip():
-            continue
-        parts = [x.strip().lower() for x in chord.split("+") if x.strip()]
-        key = "" if parts[-1] in SKHD_MODS else parts[-1]  # a bare "cmd" is a modifier-only hold
-        mods = parts[:-1] if key else parts
-        short = name.partition(":")[2] or name
-        out.append(bind_obj(modmask(mods), keyname(key) if key else "",
-                            "Shell: " + re.sub(r"(?<=[a-z])(?=[A-Z])", " ", short).capitalize(), "global", name))
+    for name, chords in (table.items() if isinstance(table, dict) else []):
+        for chord in (chords if isinstance(chords, list) else [chords]):  # a list is several chords for one name
+            if not isinstance(chord, str) or not chord.strip():
+                continue
+            parts = [x.strip().lower() for x in chord.split("+") if x.strip()]
+            key = "" if parts[-1] in SKHD_MODS else parts[-1]  # a bare "cmd" is a modifier-only hold
+            mods = parts[:-1] if key else parts
+            short = name.partition(":")[2] or name
+            out.append(bind_obj(modmask(mods), keyname(key) if key else "",
+                                "Shell: " + re.sub(r"(?<=[a-z])(?=[A-Z])", " ", short).capitalize(), "global", name))
     return out
 
 
