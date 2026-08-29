@@ -63,17 +63,23 @@ Singleton {
     // "\n" or "\1" would be eaten by the JS lexer before sh ever saw it.
 
     readonly property string _script: `
-B=$(pmset -g batt 2>/dev/null)
-P=$(pmset -g 2>/dev/null)
-A=$(ioreg -r -c AppleSmartBattery -w0 2>/dev/null | grep -oE '"InstantAmperage" *= *[0-9]+' | grep -oE '[0-9]+$' | head -1)
+R=$(ioreg -r -c AppleSmartBattery -w0 2>/dev/null)
+pick() { echo "$R" | grep -oE '"'"$1"'" *= *[0-9]+' | grep -oE '[0-9]+$' | head -1; }
+# ioreg publishes signed counters as unsigned 64-bit. Anything above 2^63 is a
+# negative number, and JS cannot un-wrap it once parseInt has rounded it to a
+# double, so it has to come back over the wire already signed.
+sgn() { [ -n "$1" ] || return 0; command -v bc >/dev/null 2>&1 || return 0; echo "if ($1 > 9223372036854775807) { $1 - 18446744073709551616 } else { $1 }" | bc 2>/dev/null; }
 echo "@@BATT"
-echo "$B"
+pmset -g batt 2>/dev/null
 echo "@@PMSET"
-echo "$P" | grep -E 'lowpowermode|highpowermode'
+pmset -g 2>/dev/null | grep -E 'lowpowermode|highpowermode'
 echo "@@IOREG"
-ioreg -r -c AppleSmartBattery -w0 2>/dev/null | grep -oE '"(AppleRawMaxCapacity|AppleRawCurrentCapacity|DesignCapacity|Voltage|CycleCount)" *= *[0-9]+'
+echo "$R" | grep -oE '"(AppleRawMaxCapacity|AppleRawCurrentCapacity|DesignCapacity|Voltage|CycleCount)" *= *[0-9]+'
+echo "$R" | grep -oE '"(IsCharging|ExternalConnected|FullyCharged)" *= *(Yes|No)'
 echo "@@AMP"
-if [ -n "$A" ] && command -v bc >/dev/null 2>&1; then echo "if ($A > 9223372036854775807) { $A - 18446744073709551616 } else { $A }" | bc 2>/dev/null; fi
+sgn "$(pick InstantAmperage)"
+echo "@@POWER"
+sgn "$(pick BatteryPower)"
 echo "@@HEALTH"
 system_profiler SPPowerDataType -json 2>/dev/null | grep -oE 'health_maximum_capacity[^0-9]*[0-9]+' | head -1
 `
@@ -105,6 +111,13 @@ system_profiler SPPowerDataType -json 2>/dev/null | grep -oE 'health_maximum_cap
         return m ? parseInt(m[1], 10) : 0;
     }
 
+    // Tri-state on purpose: null means the Mac never published the key, which is
+    // what selects the pmset fallback in _apply.
+    function _ioregBool(section: string, key: string): var {
+        const m = section.match(new RegExp('"' + key + '" *= *(Yes|No)'));
+        return m ? m[1] === "Yes" : null;
+    }
+
     function _apply(text: string): void {
         const batt = root._section(text, "BATT");
         const pmset = root._section(text, "PMSET");
@@ -116,11 +129,28 @@ system_profiler SPPowerDataType -json 2>/dev/null | grep -oE 'health_maximum_cap
         const pct = batt.match(/(\d+)%/);
         const present = /present:\s*true/.test(batt);
 
-        root.onBattery = /Battery Power/.test(batt);
+        // ioreg's own booleans beat parsing pmset's prose: they flip the instant
+        // the adapter is plugged in, and they tell "plugged in but held at 80% by
+        // optimised charging" -- which pmset words as "AC attached; not charging",
+        // indistinguishable from a real discharge to a percentage-only reader --
+        // apart from actually running off the battery. pmset stays the fallback
+        // for any Mac that does not publish them.
+        const external = root._ioregBool(ioreg, "ExternalConnected");
 
-        // "not charging" must be tested before "charging" -- it contains it.
+        root.onBattery = external !== null ? !external : /Battery Power/.test(batt);
+
         let state = UPowerDeviceState.Unknown;
-        if (/not charging/i.test(batt))
+        if (external !== null) {
+            if (external && root._ioregBool(ioreg, "FullyCharged"))
+                state = UPowerDeviceState.FullyCharged;
+            else if (root._ioregBool(ioreg, "IsCharging"))
+                state = UPowerDeviceState.Charging;
+            else if (external)
+                state = UPowerDeviceState.PendingCharge;
+            else
+                state = UPowerDeviceState.Discharging;
+        } else if (/not charging/i.test(batt))
+            // "not charging" must be tested before "charging" -- it contains it.
             state = UPowerDeviceState.PendingCharge;
         else if (/finishing charge|;\s*charging/i.test(batt))
             state = UPowerDeviceState.Charging;
@@ -138,6 +168,14 @@ system_profiler SPPowerDataType -json 2>/dev/null | grep -oE 'health_maximum_cap
         const rawCur = root._ioreg(ioreg, "AppleRawCurrentCapacity");
         const design = root._ioreg(ioreg, "DesignCapacity");
         const milliamps = Math.abs(parseInt(root._section(text, "AMP").trim(), 10) || 0);
+        // Apple's own power telemetry, in milliwatts. InstantAmperage is a
+        // single instantaneous current sample and reads far low against it --
+        // -338 mA x 11.29 V = 3.8 W on the same poll that reports 5.7 W here,
+        // which is also what SystemLoad says the machine is drawing. Amperage
+        // taken alone swings the other way (-1340 mA = 15 W). Only the
+        // milliwatt figure is a real measurement, so the current stays a
+        // fallback for Macs that do not publish PowerTelemetryData.
+        const milliwatts = Math.abs(parseInt(root._section(text, "POWER").trim(), 10) || 0);
 
         // Apple's own "maximum capacity" figure; falls back to raw capacity ratio.
         let health = parseFloat(root._section(text, "HEALTH").replace(/[^0-9.]/g, ""));
@@ -169,7 +207,7 @@ system_profiler SPPowerDataType -json 2>/dev/null | grep -oE 'health_maximum_cap
             "timeToFull": charging ? seconds : 0,
             "energy": rawCur * volts / 1000,
             "energyCapacity": rawMax * volts / 1000,
-            "changeRate": milliamps * volts / 1000,
+            "changeRate": milliwatts > 0 ? milliwatts / 1000 : milliamps * volts / 1000,
             "healthPercentage": health > 0 ? health : 0,
             "healthSupported": health > 0,
             "iconName": root._iconName(state, percent, present),
@@ -215,7 +253,9 @@ system_profiler SPPowerDataType -json 2>/dev/null | grep -oE 'health_maximum_cap
     }
 
     Timer {
-        interval: 20000
+        // ponytail: a plug-in shows up within one tick. `pmset -g pslog` streams
+        // the change instantly; wire it up if 10s of stale bolt ever grates.
+        interval: 10000
         running: true
         repeat: true
         onTriggered: proc.running = true
