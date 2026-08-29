@@ -63,6 +63,15 @@ void settlePanel(WId view);
 /// whenever the application's active state changes.
 void registerPanel(WId view, PanelLayer layer, bool focusable);
 
+/// Turn this process into a shell: accessory activation policy, no cmd-Q.
+///
+/// Called as soon as a PanelWindow exists, visible or not. Waiting for the
+/// first panel to show is too late: Qt activates a regular application as it
+/// starts, so a config whose panels all begin hidden -- every probe under
+/// tests/, the shell while its bar is still loading -- took the keyboard away
+/// from whatever the user was typing into. Idempotent.
+void becomeShellProcess();
+
 /// True once this process has registered at least one panel, i.e. it is a shell
 /// rather than a plain application window (settings, the welcome screen).
 bool processOwnsPanels();

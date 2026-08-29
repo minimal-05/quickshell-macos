@@ -89,6 +89,12 @@ bool CocoaPanelEventFilter::eventFilter(QObject* watched, QEvent* event) {
 }
 
 CocoaPanelWindow::CocoaPanelWindow(QObject* parent): ProxyWindowBase(parent) {
+	// A PanelWindow object makes this process a shell, whether or not the panel
+	// ever shows. The backing window is only created on first show, so waiting
+	// for it would leave a config whose panels start hidden holding the
+	// activation Qt took at launch.
+	becomeShellProcess();
+
 	QObject::connect(
 	    &this->eventFilter,
 	    &CocoaPanelEventFilter::surfaceCreated,

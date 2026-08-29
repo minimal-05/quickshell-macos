@@ -10,6 +10,7 @@
 
 #include <qelapsedtimer.h>
 #include <qhash.h>
+#include <qlogging.h>
 #include <qtypes.h>
 #include <qwindowdefs.h>
 
@@ -25,6 +26,87 @@ struct PanelConfig {
 QHash<WId, PanelConfig>& panelConfigs() {
 	static QHash<WId, PanelConfig> configs;
 	return configs;
+}
+
+/// How long a cooperative activation request is given to land before the
+/// deprecated one is used instead. Activation is asynchronous, and a granted
+/// request lands within a frame; a refused one never does (measured: still
+/// not frontmost 1.5s later), so this is the whole cost of trying it first.
+constexpr auto ACTIVATION_GRACE_NS = int64_t(50) * NSEC_PER_MSEC;
+
+/// The application that was frontmost when a focusable panel took focus, so it
+/// can be handed back on close. Stored as a pid to avoid holding a strong
+/// reference to another process's NSRunningApplication.
+pid_t& previousFrontmostPid() {
+	static pid_t pid = 0;
+	return pid;
+}
+
+/// Set while a panel has asked for activation and not yet given it back, so an
+/// activation that arrives without one can be told apart from a requested one.
+bool& activationRequested() {
+	static auto requested = false;
+	return requested;
+}
+
+/// Whoever was frontmost when this process was loaded, before Qt had a chance
+/// to activate it. Read from a static initialiser: by the time any of our
+/// code runs on purpose, Qt's cocoa plugin has already made the process a
+/// regular application and LaunchServices has already brought it to front.
+pid_t& frontmostAtLaunch() {
+	static pid_t pid = 0;
+	return pid;
+}
+
+__attribute__((constructor)) void recordFrontmostAtLaunch() {
+	auto* app = NSWorkspace.sharedWorkspace.frontmostApplication;
+	if (app != nil && app.processIdentifier != getpid()) frontmostAtLaunch() = app.processIdentifier;
+}
+
+void logActivation(const char* what, pid_t pid, NSWindow* window) {
+	qInfo("cocoa: activation %s pid=%d frontmost=%d active=%d visible=%d canKey=%d key=%d", what,
+	      (int) pid, (int) NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier,
+	      (int) NSApp.isActive, (int) window.isVisible, (int) window.canBecomeKeyWindow,
+	      (int) window.isKeyWindow);
+}
+
+/// Hand activation to @p pid. On macOS 14 an application activates only when
+/// the active one yields to it, which is what the yield does; the request that
+/// follows is then honoured rather than deferred. Returns false if the app is
+/// gone.
+bool handActivationTo(pid_t pid) {
+	auto* app = [NSRunningApplication runningApplicationWithProcessIdentifier:pid];
+	if (app == nil || app.terminated) return false;
+
+	if (@available(macOS 14.0, *)) {
+		[NSApp yieldActivationToApplication:app];
+	}
+
+	return [app activateWithOptions:0];
+}
+
+/// Activation that arrived while no panel had asked for it.
+///
+/// Qt's cocoa plugin turns a command-line-launched process into a regular
+/// application as it starts, and LaunchServices then brings it to front --
+/// so a shell took the keyboard away from whatever the user was typing into
+/// the moment it launched, before the first panel existed and switched the
+/// policy back to accessory. The activation lands after that switch, which is
+/// why it is caught here rather than in becomeShellProcess. Only the first
+/// one: later unrequested activations are the user clicking into a focusable
+/// panel, which is exactly what activation is for.
+void releaseStartupActivation() {
+	static auto handled = false;
+	if (handled || activationRequested()) return;
+	handled = true;
+
+	auto pid = frontmostAtLaunch();
+	if (pid != 0 && handActivationTo(pid)) {
+		logActivation("released at startup", pid, NSApp.keyWindow);
+	} else {
+		[NSApp deactivate];
+		logActivation("released at startup (deactivate)", pid, NSApp.keyWindow);
+	}
 }
 
 /// Whether panels are currently held inert because a screen capture owns the
@@ -289,6 +371,12 @@ void reapplyPanels() {
 	(void) notification;
 	qs::cocoa::reapplyPanels();
 }
+
+- (void)becameActive:(NSNotification*)notification {
+	(void) notification;
+	qs::cocoa::releaseStartupActivation();
+	qs::cocoa::reapplyPanels();
+}
 @end
 
 namespace qs::cocoa {
@@ -304,7 +392,7 @@ void ensureObserver() {
 	auto* center = NSNotificationCenter.defaultCenter;
 
 	[center addObserver:observer
-	           selector:@selector(reapply:)
+	           selector:@selector(becameActive:)
 	               name:NSApplicationDidBecomeActiveNotification
 	             object:nil];
 
@@ -324,17 +412,7 @@ void ensureObserver() {
 void registerPanel(WId view, PanelLayer layer, bool focusable) {
 	if (view == 0) return;
 
-	// A process that owns panels is a shell: no Dock icon, no menu bar, never
-	// the active application. A process that owns none is an ordinary window
-	// (settings, the welcome screen) and must stay a regular app, or the user
-	// has no menu bar to quit it from and their cmd-Q lands on the shell.
-	static auto policyApplied = false;
-	if (!policyApplied) {
-		policyApplied = true;
-		setAccessoryActivationPolicy();
-		stripQuitKeyEquivalent();
-	}
-
+	becomeShellProcess();
 	ensureObserver();
 
 	auto config = PanelConfig {.layer = layer, .focusable = focusable};
@@ -343,6 +421,24 @@ void registerPanel(WId view, PanelLayer layer, bool focusable) {
 }
 
 bool processOwnsPanels() { return !panelConfigs().isEmpty(); }
+
+void becomeShellProcess() {
+	// A process that owns panels is a shell: no Dock icon, no menu bar, never
+	// the active application. A process that owns none is an ordinary window
+	// (settings, the welcome screen) and must stay a regular app, or the user
+	// has no menu bar to quit it from and their cmd-Q lands on the shell.
+	static auto policyApplied = false;
+	if (policyApplied) return;
+	policyApplied = true;
+
+	setAccessoryActivationPolicy();
+	stripQuitKeyEquivalent();
+	ensureObserver();
+
+	// The activation Qt took at startup may already have landed; otherwise the
+	// observer catches it as it does.
+	if (NSApp.isActive) releaseStartupActivation();
+}
 
 void applyUndecoratedChrome(WId view) {
 	auto* window = windowFor(view);
@@ -419,39 +515,81 @@ void applyPopupChrome(WId view) {
 	window.acceptsMouseMovedEvents = YES;
 }
 
-namespace {
-/// The application that was frontmost when a focusable panel took focus, so it
-/// can be handed back on close. Stored as a pid to avoid holding a strong
-/// reference to another process's NSRunningApplication.
-pid_t& previousFrontmostPid() {
-	static pid_t pid = 0;
-	return pid;
-}
-} // namespace
-
 void focusPanel(WId view) {
 	auto* window = windowFor(view);
 	if (window == nil) return;
-	if (![window canBecomeKeyWindow]) return;
+	if (![window canBecomeKeyWindow]) {
+		logActivation("refused", 0, window);
+		return;
+	}
 
-	auto* frontmost = [[NSWorkspace sharedWorkspace] frontmostApplication];
-	if (frontmost != nil && frontmost.processIdentifier != getpid()) {
+	// Only the first panel to take focus records who had it: while the shell is
+	// already active, the frontmost application is the shell itself, and a
+	// second panel opening over the first must not overwrite the app the user
+	// actually came from.
+	auto* frontmost = NSWorkspace.sharedWorkspace.frontmostApplication;
+	auto foreign = frontmost != nil && frontmost.processIdentifier != getpid();
+	if (foreign && previousFrontmostPid() == 0) {
 		previousFrontmostPid() = frontmost.processIdentifier;
 	}
 
-	[NSApp activateIgnoringOtherApps:YES];
+	activationRequested() = true;
+
+	if (foreign || !NSApp.isActive) {
+		// macOS 14 cooperative activation first: -activate is granted when the
+		// system agrees the user meant it, and costs nothing when it is not.
+		//
+		// ponytail: it is not granted here. The user's hotkey reaches the shell as
+		// an IPC call from skhd, which is no user event as far as AppKit is
+		// concerned, so the process holds no activation right and the frontmost
+		// app has not yielded one -- measured: the panel was still not frontmost
+		// 1.5s later. The deprecated call still takes activation outright on
+		// macOS 14 and 15 and is the only public way for a hotkey-driven
+		// accessory to do so, so it stays as the fallback, applied only when the
+		// cooperative request has visibly not landed. Ceiling: macOS dropping the
+		// deprecated path. Upgrade: an activation right handed over by whatever
+		// delivers the hotkey, once there is a public API for that.
+		if (@available(macOS 14.0, *)) {
+			[NSApp activate];
+		}
+
+		dispatch_after(
+		    dispatch_time(DISPATCH_TIME_NOW, ACTIVATION_GRACE_NS),
+		    dispatch_get_main_queue(),
+		    ^{
+		      if (NSApp.isActive || !activationRequested()) return;
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+		      [NSApp activateIgnoringOtherApps:YES];
+#pragma clang diagnostic pop
+		      logActivation("taken (fallback)", previousFrontmostPid(), window);
+		    }
+		);
+	}
+
+	// Takes effect when the activation lands: an inactive application's key
+	// window is restored as it becomes active.
 	[window makeKeyWindow];
+	logActivation("taken", previousFrontmostPid(), window);
 }
 
 void unfocusPanel() {
+	activationRequested() = false;
+
 	auto pid = previousFrontmostPid();
 	if (pid == 0) return;
 	previousFrontmostPid() = 0;
 
+	// Nothing to give back if the user has already gone elsewhere: a click in
+	// another application activated it and deactivated the shell before the
+	// panel was told to close. Re-activating the app recorded at open would
+	// snatch the keyboard away from the one the user just chose.
+	if (!NSApp.isActive) return;
+
 	// Give the keyboard back, or closing the launcher leaves the user typing
 	// into a shell with nothing focused.
-	auto* app = [NSRunningApplication runningApplicationWithProcessIdentifier:pid];
-	if (app != nil) [app activateWithOptions:0];
+	auto accepted = handActivationTo(pid);
+	logActivation(accepted ? "returned" : "return refused", pid, NSApp.keyWindow);
 }
 
 void unregisterPanel(WId view) { panelConfigs().remove(view); }
