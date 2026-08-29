@@ -9,9 +9,10 @@ Notification Center store usernoted keeps at
 
     ~/Library/Group Containers/group.com.apple.usernoted/db2/db
 
-so this polls that store -- there is no API to subscribe to it -- and replays
-each new row through notify-send, which hands it to the running shell over IPC,
-the stand-in for the session bus.
+so this watches that store -- there is no API to subscribe to it, but kqueue
+can wake on the SQLite WAL being written -- and replays each new row through
+notify-send, which hands it to the running shell over IPC, the stand-in for the
+session bus.
 
 Started and stopped with the shell by qs-start; running it by hand
 is only useful for debugging. It holds a lock so a second copy exits at once,
@@ -31,6 +32,7 @@ import fcntl
 import json
 import os
 import plistlib
+import select
 import sqlite3
 import subprocess
 import sys
@@ -45,7 +47,14 @@ STATE_DIR = os.path.expanduser("~/Library/Caches/quickshell")
 LOCK_PATH = os.path.join(STATE_DIR, "notify-bridge.lock")
 STATE_PATH = os.path.join(STATE_DIR, "notify-bridge.json")
 
-INTERVAL = 2.0
+# The store is watched with kqueue, so this is only a safety net for a write
+# the vnode filter missed (usernoted swapping the store out), and the pace of
+# the liveness check while the shell is gone.
+INTERVAL = 30.0
+GONE_INTERVAL = 2.0
+# Where quickshell registers its instances; qs-start exports the same default.
+RUNTIME_DIR = os.environ.get("XDG_RUNTIME_DIR", f"/tmp/quickshell-{os.getuid()}")
+BY_PID = os.path.join(RUNTIME_DIR, "quickshell", "by-pid")
 # Notification uuids remembered on disk, so a restart cannot replay what the
 # previous run already forwarded.
 SEEN_LIMIT = 300
@@ -105,10 +114,65 @@ def save_state(state):
 
 
 def shell_running():
-    return subprocess.run(
-        ["pgrep", "-x", "quickshell"],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-    ).returncode == 0
+    """Any live quickshell instance. Each one registers <runtime>/quickshell/
+    by-pid/<pid>; entries outlive a crash (qs-reap prunes them), so the pid is
+    checked with kill -0 rather than trusted. No process is spawned."""
+    try:
+        pids = os.listdir(BY_PID)
+    except OSError:
+        return False
+    for name in pids:
+        try:
+            os.kill(int(name), 0)
+            return True
+        except (ValueError, ProcessLookupError):
+            continue
+        except PermissionError:
+            return True
+    return False
+
+
+class StoreWatch:
+    """kqueue EVFILT_VNODE on the store's WAL and main file: wait() returns as
+    soon as either is written, or after `timeout`. SQLite in WAL mode appends
+    every commit to db-wal and only touches db on checkpoint; usernoted may
+    also replace either file, which the DELETE/RENAME notes catch so the next
+    wait() re-arms on the new one. A file that cannot be opened is retried on
+    every wait(), and with nothing armed wait() degrades to a plain sleep."""
+
+    FLAGS = (select.KQ_NOTE_WRITE | select.KQ_NOTE_EXTEND
+             | select.KQ_NOTE_DELETE | select.KQ_NOTE_RENAME)
+
+    def __init__(self, paths):
+        self.paths = paths
+        self.kq = select.kqueue()
+        self.fds = {}
+
+    def arm(self):
+        for path in self.paths:
+            if path in self.fds:
+                continue
+            try:
+                fd = os.open(path, os.O_RDONLY)
+                self.kq.control([select.kevent(
+                    fd, select.KQ_FILTER_VNODE,
+                    select.KQ_EV_ADD | select.KQ_EV_CLEAR, self.FLAGS)], 0, 0)
+            except OSError:
+                continue
+            self.fds[path] = fd
+
+    def wait(self, timeout):
+        self.arm()
+        if not self.fds:
+            time.sleep(timeout)
+            return
+        events = self.kq.control(None, 8, timeout)
+        for event in events:
+            if event.fflags & (select.KQ_NOTE_DELETE | select.KQ_NOTE_RENAME):
+                for path, fd in list(self.fds.items()):
+                    if fd == event.ident:
+                        os.close(fd)
+                        del self.fds[path]
 
 
 def text(value):
@@ -256,9 +320,10 @@ def main():
     seen = state["seen"]
     gone_since = None
     failing_since = None
+    watch = StoreWatch([f"{DB}-wal", DB])
 
     while True:
-        time.sleep(INTERVAL)
+        watch.wait(GONE_INTERVAL if gone_since is not None else INTERVAL)
 
         if shell_running():
             gone_since = None
