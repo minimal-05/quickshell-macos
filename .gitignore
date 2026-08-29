@@ -15,16 +15,11 @@
 /.direnv/
 
 # macOS fork: build artifacts.
-# bin/qs is NOT here -- it is the committed entry point, not a generated wrapper.
-# Quickshell.app is generated in full by bin/qs-bundle (Info.plist from
-# assets/Quickshell.plist, the Mach-O, the signature); bin/quickshell is the
-# wrapper onto it. bin/menus is built from helpers/menus by qs-build.
+# Quickshell.app is generated in full by qs-bundle (Info.plist from
+# assets/Quickshell.plist, the Mach-O, the tools compiled or copied from
+# src/tools/, the signature). bin/'s symlinks are covered by bin/.gitignore;
+# bin/qs itself is the committed entry point, not a generated wrapper.
 /Quickshell.app/
-/bin/quickshell
-/bin/menus
-/helpers/menus/bin/
-/bin/qs-sysstats.bin
-/bin/__pycache__
 /shell
 /proof-*.png
 .DS_Store

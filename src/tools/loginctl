@@ -3,8 +3,8 @@
 #
 #   loginctl [--dry-run] lock-session | suspend | poweroff | reboot |
 #            terminate-user | terminate-session | kill-session | logout
-#   systemctl [--dry-run] suspend | poweroff | reboot        (bin/systemctl execs this)
-#   reboot [--dry-run]                                        (bin/reboot execs this)
+#   systemctl [--dry-run] suspend | poweroff | reboot        (systemctl execs this)
+#   reboot [--dry-run]                                        (reboot execs this)
 #
 # Only the verbs end-4's Session.qml uses. Anything else (hibernate,
 # --firmware-setup, unit management) prints "not supported on macOS" and exits 1
@@ -18,7 +18,7 @@
 # get their normal "save changes?" prompts.
 set -uo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DRY=0
 [ "${1:-}" = "--dry-run" ] && { DRY=1; shift; }
 [ "${1:-}" = "-n" ] && { DRY=1; shift; }
@@ -36,7 +36,7 @@ case "$verb" in
         case "${QS_LOCK:-display}" in
             screensaver) run "open -a ScreenSaverEngine" ;;
             cgsession)   run "'/System/Library/CoreServices/Menu Extras/User.menu/Contents/Resources/CGSession' -suspend" ;;
-            *)           run "'$ROOT/bin/qs-ipc' lock activate >/dev/null 2>&1; pmset displaysleepnow" ;;
+            *)           run "'$HERE/qs-ipc' lock activate >/dev/null 2>&1; pmset displaysleepnow" ;;
         esac ;;
     suspend|sleep)
         run "pmset sleepnow" ;;

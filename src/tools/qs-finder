@@ -8,7 +8,9 @@
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT="$(cd "$HERE/.." && pwd)"
+# The checkout: two levels up from src/tools, four from inside the bundle.
+ROOT="${HERE%/Quickshell.app/Contents/Resources/tools}"; ROOT="${ROOT%/src/tools}"
+QS="$ROOT/Quickshell.app/Contents/MacOS/quickshell"
 CONFIG="${QS_FINDER_CONFIG:-$HOME/.config/quickshell/${QS_CONFIG_NAME:-end4}/finder.qml}"
 
 # --hidden: start the process without showing a window. The login agent uses this
@@ -24,15 +26,7 @@ case "${1:-}" in
     --pick-wallpaper) PICK_MODE="${2:-dark}" ;;
 esac
 
-# skhd, launchd and LaunchServices all hand down a minimal PATH (launchctl getenv
-# PATH is empty), so without this the config cannot find yabai, jq or the other
-# tools it shells out to. $ROOT/bin first: it carries our notify-send / xdg-open
-# / pidof / qs stand-ins, which end-4 calls by bare name.
-export PATH="$ROOT/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
-
-export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp/quickshell-$UID}"
-mkdir -p "$XDG_RUNTIME_DIR"
-export QML2_IMPORT_PATH="$ROOT/shims${QML2_IMPORT_PATH:+:$QML2_IMPORT_PATH}"
+# PATH, XDG_RUNTIME_DIR and QML2_IMPORT_PATH are the binary's own doing.
 
 # The wallpaper picker is a dialog, not a tile: yabai leaves it alone and puts it
 # above the window that asked for it, which is usually settings. Matched on the
@@ -65,9 +59,9 @@ finder_running() {
 # every other Mac app behaves -- not a jump back to the one that is open.
 present() {
     if [ -n "$PICK_MODE" ]; then
-        "$ROOT/bin/qs" -p "$CONFIG" ipc call finder pickWallpaper "$PICK_MODE" >/dev/null 2>&1
+        "$QS" -p "$CONFIG" ipc call finder pickWallpaper "$PICK_MODE" >/dev/null 2>&1
     else
-        "$ROOT/bin/qs" -p "$CONFIG" ipc call finder newWindow >/dev/null 2>&1
+        "$QS" -p "$CONFIG" ipc call finder newWindow >/dev/null 2>&1
     fi
 }
 
@@ -91,7 +85,7 @@ fi
 if [ -n "$PICK_MODE" ]; then
     # Hidden, so the pick lands in the warm window rather than beside a plain
     # one nobody asked for.
-    QS_FINDER_START_HIDDEN=1 "$ROOT/bin/qs" -p "$CONFIG" &
+    QS_FINDER_START_HIDDEN=1 "$QS" -p "$CONFIG" &
     for _ in $(seq 1 40); do
         sleep 0.25
         present && exit 0
@@ -99,4 +93,4 @@ if [ -n "$PICK_MODE" ]; then
     exit 1
 fi
 
-exec "$ROOT/bin/qs" -p "$CONFIG"
+exec "$QS" -p "$CONFIG"

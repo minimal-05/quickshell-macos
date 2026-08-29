@@ -4,6 +4,10 @@
 #   qs-build              build into ./build and install into Quickshell.app
 #   qs-build --clean      discard the build directory first
 #
+# Runs from src/tools in a fresh checkout (`bin/qs qs-build`) and from inside
+# the bundle afterwards (bin/qs-build); the helper binaries and every tool are
+# qs-bundle's job, so nothing here knows their names.
+#
 # QS_CODESIGN_IDENTITY="Quickshell Dev" signs the bundle with that certificate
 # so TCC grants survive rebuilds (PLATFORM.md, "TCC identity"); unset = ad-hoc.
 #
@@ -11,7 +15,9 @@
 
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# The checkout: two levels up from src/tools, four from inside the bundle.
+ROOT="${HERE%/Quickshell.app/Contents/Resources/tools}"; ROOT="${ROOT%/src/tools}"
 BUILD="$ROOT/build"
 
 export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
@@ -33,22 +39,8 @@ echo "==> building"
 cmake --build "$BUILD" -j"$(sysctl -n hw.ncpu)"
 
 # Into Quickshell.app rather than loose in bin/, so TCC keys its grants on a
-# stable bundle id instead of a cdhash that changes every build. qs-bundle also
-# writes bin/quickshell as the wrapper onto it.
-"$ROOT/bin/qs-bundle" "$BUILD/src/quickshell"
-
-# The AX helper behind the menu bar (services/MacMenus.qml), found on PATH as
-# `menus`. Two files and a clang call, so it rides along with the main build
-# rather than owning a step of its own. It came from the SketchyBar config,
-# which is gone.
-echo "==> helpers"
-make -s -C "$ROOT/helpers/menus" >/dev/null
-cp "$ROOT/helpers/menus/bin/menus" "$ROOT/bin/menus"
-codesign -f -s - "$ROOT/bin/menus" >/dev/null 2>&1 || true
-
-# Standalone helper for services/ResourceUsage.qml (see src/tools/qs-sysstats.c).
-# It stays outside the CMake tree so it builds in a second without Qt.
-echo "==> building $ROOT/bin/qs-sysstats.bin"
-cc -O2 -Wall -o "$ROOT/bin/qs-sysstats.bin" "$ROOT/src/tools/qs-sysstats.c"
+# stable bundle id instead of a cdhash that changes every build. The tools and
+# bin/'s symlinks are installed by the same step.
+"$HERE/qs-bundle" "$BUILD/src/quickshell"
 
 "$ROOT/bin/qs" --version

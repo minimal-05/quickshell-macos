@@ -12,7 +12,9 @@
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT="$(cd "$HERE/.." && pwd)"
+# The checkout: two levels up from src/tools, four from inside the bundle.
+ROOT="${HERE%/Quickshell.app/Contents/Resources/tools}"; ROOT="${ROOT%/src/tools}"
+QS="$ROOT/Quickshell.app/Contents/MacOS/quickshell"
 CONFIG="${QS_PREVIEW_CONFIG:-$HOME/.config/quickshell/${QS_CONFIG_NAME:-end4}/preview.qml}"
 
 START_HIDDEN=0
@@ -28,15 +30,7 @@ case "$FILE" in
     *)     FILE="$PWD/$FILE" ;;
 esac
 
-# skhd, launchd and LaunchServices all hand down a minimal PATH (launchctl getenv
-# PATH is empty), so without this the config cannot find the tools it shells out
-# to. $ROOT/bin first: it carries our notify-send / xdg-open / pidof / qs
-# stand-ins, which end-4 calls by bare name.
-export PATH="$ROOT/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
-
-export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp/quickshell-$UID}"
-mkdir -p "$XDG_RUNTIME_DIR"
-export QML2_IMPORT_PATH="$ROOT/shims${QML2_IMPORT_PATH:+:$QML2_IMPORT_PATH}"
+# PATH, XDG_RUNTIME_DIR and QML2_IMPORT_PATH are the binary's own doing.
 
 # Already open? Hand the file over rather than starting a second copy.
 #
@@ -62,12 +56,12 @@ if preview_running; then
     # Closing the window only hides it, so the running process may have nothing
     # on screen to focus -- ask it to show itself rather than hunting a window.
     if [ -n "$FILE" ]; then
-        exec "$ROOT/bin/qs" -p "$CONFIG" ipc call preview open "$FILE"
+        exec "$QS" -p "$CONFIG" ipc call preview open "$FILE"
     fi
-    exec "$ROOT/bin/qs" -p "$CONFIG" ipc call preview present
+    exec "$QS" -p "$CONFIG" ipc call preview present
 fi
 
 [ "$START_HIDDEN" = "1" ] && export QS_PREVIEW_START_HIDDEN=1
 export QS_PREVIEW_PATH="$FILE"
 
-exec "$ROOT/bin/qs" -p "$CONFIG"
+exec "$QS" -p "$CONFIG"

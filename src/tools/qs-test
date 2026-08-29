@@ -24,16 +24,23 @@
 # hover outside` readable. Use `==` explicitly when the fn takes arguments.
 
 set -uo pipefail
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# The checkout: two levels up from src/tools, four from inside the bundle.
+ROOT="${HERE%/Quickshell.app/Contents/Resources/tools}"; ROOT="${ROOT%/src/tools}"
+QS="$ROOT/Quickshell.app/Contents/MacOS/quickshell"
+# The binary sets these itself; they are here for a QS_BINARY that names a
+# bare build/src/quickshell outside any bundle, which cannot find the shims
+# or this tree's bin/ from its own path.
 export PATH="$ROOT/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp/quickshell-$UID}"
 export QML2_IMPORT_PATH="$ROOT/shims${QML2_IMPORT_PATH:+:$QML2_IMPORT_PATH}"
 mkdir -p "$XDG_RUNTIME_DIR"
 
-# `qs` by default -- it sets the env and execs the bundle binary, so a test
-# instance is the same process image as the real shell. QS_BINARY points a run
-# at another build (a worktree's Quickshell.app, or a bare build/src/quickshell).
-BINARY="${QS_BINARY:-$ROOT/bin/qs}"
+# This bundle's Mach-O by default, so a test instance is the same process
+# image as the real shell. QS_BINARY points a run at another build (a
+# worktree's Quickshell.app/Contents/MacOS/quickshell, or a bare
+# build/src/quickshell).
+BINARY="${QS_BINARY:-$QS}"
 TIMEOUT=20
 KEEP=0
 SHELL_ONLY=0

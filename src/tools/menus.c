@@ -1,3 +1,7 @@
+// cc: -std=c99 -O3 -F/System/Library/PrivateFrameworks/ -framework Carbon -framework SkyLight
+// The AX helper behind the menu bar (services/MacMenus.qml), on PATH as
+// `menus`. From the SketchyBar config, which is gone. qs-bundle compiles it
+// into Quickshell.app/Contents/Resources/tools with the flags above.
 #include <Carbon/Carbon.h>
 
 void ax_init() {

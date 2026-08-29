@@ -13,7 +13,10 @@
 
 set -uo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# The checkout: two levels up from src/tools, four from inside the bundle.
+# The bindings name bin/<tool>, the symlinks qs-bundle keeps stable.
+ROOT="${HERE%/Quickshell.app/Contents/Resources/tools}"; ROOT="${ROOT%/src/tools}"
 RC="${SKHD_RC:-$HOME/.config/skhd/skhdrc}"
 BEGIN="# --- quickshell bindings (managed by qs-install-keybinds) ---"
 END="# --- end quickshell bindings ---"
