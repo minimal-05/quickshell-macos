@@ -1,0 +1,73 @@
+#!/bin/bash
+# Show an image in the shell's own viewer -- the Material answer to Preview.app.
+#
+#   qs-preview <file>   open that image, starting the app if it is not running
+#   qs-preview          just show the window
+#   qs-preview --hidden start the process with no window (priming)
+#
+# A standalone quickshell process (preview.qml), not a panel inside the running
+# shell. A process owning no panel stays a regular macOS app, which is what gives
+# this a Dock icon.
+
+set -uo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(cd "$HERE/.." && pwd)"
+CONFIG="${QS_PREVIEW_CONFIG:-$HOME/.config/quickshell/preview.qml}"
+
+START_HIDDEN=0
+FILE=""
+case "${1:-}" in
+    --hidden) START_HIDDEN=1 ;;
+    "")       ;;
+    *)        FILE="$1" ;;
+esac
+# The IPC and the environment both want a path the app can open from any cwd.
+case "$FILE" in
+    ""|/*) ;;
+    *)     FILE="$PWD/$FILE" ;;
+esac
+
+# skhd, launchd and LaunchServices all hand down a minimal PATH (launchctl getenv
+# PATH is empty), so without this the config cannot find the tools it shells out
+# to. $ROOT/bin first: it carries our notify-send / xdg-open / pidof / qs
+# stand-ins, which end-4 calls by bare name.
+export PATH="$ROOT/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp/quickshell-$UID}"
+mkdir -p "$XDG_RUNTIME_DIR"
+export QML2_IMPORT_PATH="$ROOT/shims${QML2_IMPORT_PATH:+:$QML2_IMPORT_PATH}"
+
+# Already open? Hand the file over rather than starting a second copy.
+#
+# Deliberately not `pgrep -f <config path>`: that matches *any* process whose
+# command line happens to contain the path -- an editor, a grep, the shell that
+# typed the command -- and a false positive here means the app silently refuses
+# to start. Match on the process name, which only quickshell itself can hold,
+# then confirm that specific process is running this config.
+preview_running() {
+    local pid
+    for pid in $(pgrep -x quickshell 2>/dev/null); do
+        case "$(ps -o command= -p "$pid" 2>/dev/null)" in
+            *"$CONFIG"*) return 0 ;;
+        esac
+    done
+    return 1
+}
+
+if preview_running; then
+    # Already warm. --hidden is only ever a boot-time prime, so do nothing.
+    [ "$START_HIDDEN" = "1" ] && exit 0
+
+    # Closing the window only hides it, so the running process may have nothing
+    # on screen to focus -- ask it to show itself rather than hunting a window.
+    if [ -n "$FILE" ]; then
+        exec "$ROOT/bin/quickshell" -p "$CONFIG" ipc call preview open "$FILE"
+    fi
+    exec "$ROOT/bin/quickshell" -p "$CONFIG" ipc call preview present
+fi
+
+[ "$START_HIDDEN" = "1" ] && export QS_PREVIEW_START_HIDDEN=1
+export QS_PREVIEW_PATH="$FILE"
+
+exec "$ROOT/bin/quickshell" -p "$CONFIG"
