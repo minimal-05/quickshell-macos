@@ -7,9 +7,10 @@
 //        themselves), title, activated (has-focus), workspace, monitor,
 //        lastIpcObject (the raw yabai window JSON, which carries app, frame,
 //        pid, is-floating, is-minimized ... — everything HyprlandData-style
-//        code reads out of `hyprctl clients`).
+//        code reads out of `hyprctl clients`), wayland (the Quickshell.Wayland
+//        Toplevel for the same yabai window, so `wayland?.fullscreen` works
+//        the way Background/ScreenCorners use it).
 // INERT: urgent  — no urgency hint on macOS, always false.
-//        wayland — there is no wl_surface behind this, always null.
 //        handle  — self, so `t.handle.address` still resolves.
 //
 // NOT PROVIDED: the attached form. Upstream registers this type as
@@ -19,6 +20,7 @@
 // to an undefined address rather than a hard error.
 
 import QtQuick
+import Quickshell.Wayland
 
 QtObject {
     id: root
@@ -29,8 +31,9 @@ QtObject {
     /// Self, so upstream's `toplevel.handle` chain resolves.
     readonly property var handle: root
 
-    /// INERT: always null. No Wayland handles exist on macOS.
-    readonly property var wayland: null
+    /// The Quickshell.Wayland Toplevel backed by the same yabai window, or
+    /// null until ToplevelManager has seen it. Both shims key on the window id.
+    readonly property var wayland: ToplevelManager.toplevels.values.find(t => t.wid === parseInt(root.address, 16)) ?? null
 
     property string title: ""
 

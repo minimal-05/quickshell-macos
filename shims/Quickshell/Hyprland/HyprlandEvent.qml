@@ -2,16 +2,18 @@
 //
 // Upstream this wraps one line off Hyprland's socket2 event stream.
 // There is no such stream on macOS, so the Hyprland singleton *synthesises*
-// events by diffing successive yabai polls. The shape (`name`, `data`,
+// events by diffing successive yabai queries. The shape (`name`, `data`,
 // `parse(n)`) is identical to upstream, and the subset of event names we can
 // honestly produce is:
 //
 //   workspace, workspacev2, focusedmon, activewindow, activewindowv2,
-//   openwindow, closewindow, monitoradded, monitorremoved
+//   openwindow, closewindow, monitoradded, monitoraddedv2, monitorremoved,
+//   monitorremovedv2
 //
 // REAL: name, data, parse().
-// INERT: nothing — but note that events arrive on the poll interval (~0.5s),
-//        not instantly, and every other Hyprland event name is never emitted.
+// INERT: nothing — but note that events arrive one yabai query after the
+//        yabai signal (tens of milliseconds), and every other Hyprland event
+//        name is never emitted.
 
 import QtQuick
 

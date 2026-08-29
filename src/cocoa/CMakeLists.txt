@@ -4,6 +4,7 @@ qt_add_library(quickshell-cocoa STATIC
 	nswindow.mm
 	appicon.mm
 	focusgrab.mm
+	filewatch.cpp
 	panel_window.cpp
 	sysstats.mm # round2/native-stats-power
 	power.mm # round2/native-stats-power

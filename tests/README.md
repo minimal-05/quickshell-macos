@@ -29,6 +29,13 @@ Every tool lives in `Quickshell.app/Contents/Resources/tools` (source:
 - `qs-reap [--dry-run]` — kills orphan `mediaremote-adapter.pl` helpers and
   prunes dead `$XDG_RUNTIME_DIR/quickshell` instance dirs. Run by `qs-dev`
   and `qs-start`.
+- `qs-spawns <pid> [seconds] [-v]` — every process spawned under an instance,
+  by name, polled from libproc at 1 ms so the 10 ms `yabai`/`jq` children
+  `qs-perf` misses are counted. `-v` prints each one as it appears.
+- `qs-yabai-signals install|remove|status` — the yabai signals behind the
+  Hyprland/ToplevelManager shims (one `touch` of
+  `$XDG_RUNTIME_DIR/quickshell/yabai/<event>` per event). The shims install
+  them on start; `status` shows what yabai holds.
 
 ## Checks
 
@@ -52,6 +59,7 @@ Every tool lives in `Quickshell.app/Contents/Resources/tools` (source:
 | `clipboard.sh` + `_probe_clipboard.qml` | `pbcopy` in another process fires `Quickshell.clipboardTextChanged` within 1.5 s with a fresh `clipboardText`; `bin/cliphist` `list`/`decode`/`delete`/`delete-query`/`wipe` in cliphist's shape (newest first, deduplicated, ids never reused, image entries as `[[ binary data .. png WxH ]]`); `bin/wl-copy`/`bin/wl-paste` text and `-t image/png` round trips; a set from QML is recorded and signalled once. Uses a private `QS_CLIPHIST_DIR` and puts the clipboard back | `bash tests/clipboard.sh` (`QS_BINARY` overrides the binary) |
 | `shims.sh` | the UPower, Bluetooth, Mpris and kirigami Icon shims answer with the shape consumers read (`_probe_*.qml`, one throwaway instance each) | `bash tests/shims.sh [upower bluetooth mpris kirigami]`; `QS_BINARY=... PERF=40` for a worktree and a spawn histogram |
 | `screencopy.sh` + `_probe_screencopy.qml` | `ScreencopyView` on ScreenCaptureKit: a screen still has `hasContent` and `sourceSize` at the screen's pixel size, a window still matches its yabai frame at the screen scale, `live: true` delivers frames, hiding the panel pauses the stream and showing it resumes, `stop()` ends it; without the Screen Recording grant `status == "permission"`, `hasContent == false`, one warning, no crash; no `screencapture` child either way (`qs-perf --children`) | `bash tests/screencopy.sh` (`QS_BINARY` overrides the binary; on a machine that holds the grant it reruns itself with `QS_SCREENCOPY_DENY=1` for the permission path) |
+| `yabai-events.sh` + `_probe_hyprland.qml` | the yabai-signal path: workspaces/toplevels populate, `hl.dsp.global` fires an in-process GlobalShortcut, `HyprlandToplevel.wayland` resolves, `qs_*` signals register once, an idle instance runs nothing periodic (`qs-spawns`), a Space switch reaches `focusedWorkspace` within 50 ms of the signal file's mtime for one space query and one window query | `bash tests/yabai-events.sh` (`YE_NO_SPACE=1` skips the Space switch; `QS_BINARY` for a worktree). Removes the signals afterwards only if none were registered before |
 
 Add a `_probe_<name>.qml` (with `IpcHandler` functions returning strings) or
 a `tests/<name>.sh` for every non-trivial branch of logic; the verifier runs

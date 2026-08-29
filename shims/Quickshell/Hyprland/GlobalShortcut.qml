@@ -21,6 +21,11 @@
 // [A-Za-z0-9_] replaced by "_"), so
 //     qs ipc call gs_quickshell_panelFamilyCycle press
 // emits pressed() then released(); `down` and `up` emit them separately.
+//
+// Hyprland.dispatch('hl.dsp.global("appid:name")') reaches the instance in
+// this process directly: each one registers itself in Hyprland.shortcuts
+// under "appid:name" while it exists, so the launcher's `wallpaper` action
+// fires without a round trip through qs-ipc.
 
 import QtQuick
 import Quickshell.Io
@@ -54,16 +59,40 @@ QtObject {
     // upstream too) cannot leave a registration behind.
     property var _bound: null
 
+    readonly property string _key: root.appid + ":" + root.name
+
+    // The in-process registry hl.dsp.global() looks up; kept alongside the
+    // Carbon binding so a dispatch from QML never has to spawn qs-ipc.
+    function _register(): void {
+        if (root.name.length === 0)
+            return;
+        const all = Hyprland.shortcuts;
+        all[root._key] = root;
+        Hyprland.shortcuts = all;
+    }
+
+    function _unregister(): void {
+        const all = Hyprland.shortcuts;
+        if (all[root._key] === root) {
+            delete all[root._key];
+            Hyprland.shortcuts = all;
+        }
+    }
+
     Component.onCompleted: {
         if (root.name.length === 0)
             return;
         root._bound = [root.appid, root.name];
         Cocoa.Hotkeys.bind(root.appid, root.name);
+        root._register();
     }
+
+    on_KeyChanged: root._register()
 
     Component.onDestruction: {
         if (root._bound !== null)
             Cocoa.Hotkeys.unbind(root._bound[0], root._bound[1]);
+        root._unregister();
     }
 
     readonly property Connections _keys: Connections {
