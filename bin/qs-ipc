@@ -25,4 +25,8 @@ export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp/quickshell-$UID}"
 mkdir -p "$XDG_RUNTIME_DIR"
 export QML2_IMPORT_PATH="$ROOT/shims${QML2_IMPORT_PATH:+:$QML2_IMPORT_PATH}"
 
-exec "$ROOT/bin/quickshell" -p "$CONFIG" ipc call "$@"
+# The bundle binary directly: this is on skhd's key-repeat path, and the
+# bin/quickshell wrapper would be a second bash exec per keypress.
+QS_EXE="$ROOT/Quickshell.app/Contents/MacOS/quickshell"
+[ -x "$QS_EXE" ] || QS_EXE="$ROOT/bin/quickshell"
+exec "$QS_EXE" -p "$CONFIG" ipc call "$@"

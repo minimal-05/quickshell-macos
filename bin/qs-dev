@@ -35,12 +35,9 @@ if [ "${1:-}" != "--no-build" ]; then
     fi
     step "built"
 
-    # Copying a Mach-O invalidates its signature and the kernel then kills the
-    # process with no output at all, so re-signing is not optional. Staged
-    # through a temp name so a running shell is never left half-written.
-    cp "$SRC/build/src/quickshell" "$ROOT/bin/quickshell.new"
-    codesign -f -s - "$ROOT/bin/quickshell.new" >/dev/null 2>&1
-    mv "$ROOT/bin/quickshell.new" "$ROOT/bin/quickshell"
+    # Into Quickshell.app, re-signed (QS_CODESIGN_IDENTITY or ad-hoc), with
+    # bin/quickshell rewritten as the wrapper -- see bin/qs-bundle.
+    "$ROOT/bin/qs-bundle" "$SRC/build/src/quickshell" >/dev/null
     step "installed + signed"
 fi
 
@@ -49,7 +46,11 @@ sleep 1
 # The shell just killed leaves its media-control perl helper behind and its
 # runtime dir on disk; every restart adds one of each (see qs-reap).
 "$ROOT/bin/qs-reap" --quiet
-nohup "$ROOT/bin/quickshell" -p "$CONFIG" > "$LOG" 2>&1 &
+# Launched by the bundle's real path, not the bin/quickshell wrapper, so the
+# process image TCC and `ps` see is Quickshell.app from the first exec.
+QS_EXE="$ROOT/Quickshell.app/Contents/MacOS/quickshell"
+[ -x "$QS_EXE" ] || QS_EXE="$ROOT/bin/quickshell"
+nohup "$QS_EXE" -p "$CONFIG" > "$LOG" 2>&1 &
 disown
 
 # Poll for readiness rather than sleeping a fixed guess.

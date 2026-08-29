@@ -1,0 +1,55 @@
+#!/bin/bash
+# Install a built quickshell Mach-O into Quickshell.app and sign the bundle.
+#
+#   qs-bundle <path/to/quickshell>      (qs-build and qs-dev call this)
+#
+# Why a bundle: TCC (Screen Recording, Accessibility, Full Disk Access,
+# Location, Automation) records a grant against the requesting program's
+# designated requirement. A bare ad-hoc-signed binary has no stable one -- its
+# identity is the cdhash, which changes on every rebuild -- so every grant died
+# with the next build. Inside an app bundle signed with a certificate, the
+# requirement anchors on the bundle id and the certificate, and survives
+# rebuilds. See "TCC identity" in PLATFORM.md for the one-time user steps.
+#
+# QS_CODESIGN_IDENTITY names the signing identity ("Quickshell Dev" once that
+# certificate exists). Unset, the bundle is ad-hoc signed, which still runs but
+# whose grants do not survive a rebuild.
+
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SRC="${1:?usage: qs-bundle <built-quickshell-binary>}"
+APP="$ROOT/Quickshell.app"
+EXE="$APP/Contents/MacOS/quickshell"
+IDENTITY="${QS_CODESIGN_IDENTITY:--}"
+
+[ -f "$SRC" ] || { echo "qs-bundle: no such file: $SRC" >&2; exit 1; }
+
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+cp "$ROOT/assets/Quickshell.plist" "$APP/Contents/Info.plist"
+printf 'APPL????' > "$APP/Contents/PkgInfo"
+
+# Staged through a temp name so a running shell is never left half-written:
+# rename is atomic, and the old inode stays valid for the process using it.
+cp "$SRC" "$EXE.new"
+mv "$EXE.new" "$EXE"
+
+# Copying a Mach-O invalidates its signature and the kernel then kills it on
+# exec with no output at all, so this is not optional. Signing the bundle
+# (not the bare binary) seals Info.plist into the signature, which is what
+# ties the bundle id to the code for TCC.
+codesign -f -s "$IDENTITY" "$APP" >/dev/null 2>&1 \
+    || { echo "qs-bundle: codesign with identity '$IDENTITY' failed" >&2; codesign -f -s "$IDENTITY" "$APP"; exit 1; }
+
+# bin/quickshell stays the path everything else knows (launchers, qs, skhd,
+# karabiner). It is an exec wrapper, not a symlink: NSBundle.mainBundle resolves
+# the bundle from the executable's real path, and a symlink outside the bundle
+# would leave the process with no bundle at all.
+cat > "$ROOT/bin/quickshell.new" <<WRAP
+#!/bin/bash
+exec "$EXE" "\$@"
+WRAP
+chmod +x "$ROOT/bin/quickshell.new"
+mv "$ROOT/bin/quickshell.new" "$ROOT/bin/quickshell"
+
+echo "==> $EXE ($(codesign -dv "$APP" 2>&1 | sed -n 's/^Identifier=//p'), signed: $([ "$IDENTITY" = - ] && echo ad-hoc || echo "$IDENTITY"))"

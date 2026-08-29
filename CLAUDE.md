@@ -15,8 +15,9 @@ commits on top, not a patch.
 
 ## Not committed, but on disk
 
-`bin/quickshell` (built binary) and `build/`. Both gitignored on purpose; don't
-"fix" them by adding them.
+`Quickshell.app/` (the built binary inside a bundle, see PLATFORM.md "TCC
+identity"), `bin/quickshell` (a generated two-line wrapper onto it) and
+`build/`. All gitignored on purpose; don't "fix" them by adding them.
 
 `examples/` used to hold end-4's config, untracked, with no history. On
 2026-08-29 it moved to `~/.config/quickshell`, where it is tracked in
@@ -29,7 +30,8 @@ end-4's QML calls `qs` by bare name in a dozen places and needs it on PATH.
 ## Gotchas
 
 - Copying the binary invalidates its ad-hoc signature and the kernel kills it on
-  exec **with no output**. Re-sign after any copy: `codesign -f -s - bin/quickshell`.
+  exec **with no output**. Re-sign after any copy: `bin/qs-bundle <binary>` does
+the copy and the signature (with `$QS_CODESIGN_IDENTITY`, else ad-hoc).
 - Never hardcode a `~/.claude/jobs/*/tmp` path here. Those are scratch dirs
   deleted with the job; two scripts used to build from one.
 - `karabiner.json` and `skhdrc` call `bin/qs-ipc` by **absolute path**. Moving

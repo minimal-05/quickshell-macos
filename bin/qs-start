@@ -41,4 +41,15 @@ export QS_RESPONSIBLE="$(ps -o comm= -p "$PPID" 2>/dev/null | tail -1)"
 nohup "$HERE/qs-notify-bridge" >>"${TMPDIR:-/tmp}/qs-notify-bridge.log" 2>&1 &
 disown
 
-exec "$HERE/quickshell" "$@"
+# Exec the bundle binary by its real path so NSBundle.mainBundle is
+# Quickshell.app and every subprocess (screencapture, osascript, python3)
+# reports the bundle as the program asking TCC. Falls back to bin/quickshell
+# for a tree that was built before the bundle existed.
+# ponytail: the *responsible process* macOS records is still inherited from
+# whoever exec'd this script (a terminal, skhd) unless the launcher disclaims
+# it; the ceiling is "grants belong to the bundle when launched by launchd or
+# `open -a Quickshell.app`", the upgrade path is a launchd agent that runs the
+# bundle binary directly, or a tiny disclaiming spawner.
+QS_EXE="$ROOT/Quickshell.app/Contents/MacOS/quickshell"
+[ -x "$QS_EXE" ] || QS_EXE="$HERE/quickshell"
+exec "$QS_EXE" "$@"

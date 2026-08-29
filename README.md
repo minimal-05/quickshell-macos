@@ -17,7 +17,8 @@ git clone https://github.com/minimal-05/quickshell-macos.git ~/Projects/quickshe
 cd ~/Projects/quickshell-macos && ./install.sh
 ```
 
-Builds the engine, code-signs it, and drops it at `bin/quickshell`.
+Builds the engine, installs it into `Quickshell.app`, code-signs the bundle, and
+writes the `bin/quickshell` wrapper onto it.
 
 ## What's here
 

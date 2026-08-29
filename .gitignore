@@ -15,7 +15,11 @@
 /.direnv/
 
 # macOS fork: build artifacts and third-party config
+# bin/quickshell is the generated wrapper; Quickshell.app is generated in full
+# by bin/qs-bundle (Info.plist from assets/Quickshell.plist, the Mach-O, the
+# signature) and must not be committed, same as the binary it holds.
 /bin/quickshell
+/Quickshell.app/
 /bin/qs
 /bin/__pycache__
 /shell
