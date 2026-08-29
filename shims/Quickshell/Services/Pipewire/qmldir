@@ -11,3 +11,4 @@ PwLink 1.0 PwLink.qml
 PwLinkGroup 1.0 PwLinkGroup.qml
 PwObjectTracker 1.0 PwObjectTracker.qml
 PwNodeLinkTracker 1.0 PwNodeLinkTracker.qml
+PwNodePeakMonitor 1.0 PwNodePeakMonitor.qml

@@ -4,8 +4,8 @@ import QtQuick
 //
 // FULLY INERT, and correctly so. Upstream this type refcounts pipewire object
 // bindings so that a bound node's volume/mute/properties become valid. In this
-// shim every node is always "bound": the singleton polls CoreAudio for the
-// default device regardless of who is watching. So tracking is a no-op holder
+// shim every node is always "bound": the CoreAudio HAL pushes every device's
+// state to the singleton regardless of who is watching. So tracking is a no-op holder
 // and every property upstream marks "invalid unless bound" is simply always
 // as valid as macOS can make it.
 //
