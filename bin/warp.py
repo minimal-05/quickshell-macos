@@ -1,3 +1,4 @@
+#!/usr/bin/python3
 import ctypes, ctypes.util, sys, time
 cg = ctypes.CDLL(ctypes.util.find_library("CoreGraphics") or
                  "/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics")

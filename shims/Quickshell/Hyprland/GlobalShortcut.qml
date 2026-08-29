@@ -23,6 +23,10 @@
 // `press` emits pressed() then released(); `down` and `up` emit them
 // separately, for shortcuts that care about hold-to-show behaviour.
 // Run `qs ipc show` against a live config to list every registered target.
+//
+// Hyprland.dispatch('hl.dsp.global("appid:name")') reaches the instance in
+// this process directly: each one registers itself in Hyprland.shortcuts
+// under "appid:name" while it exists.
 
 import QtQuick
 import Quickshell.Io
@@ -51,6 +55,26 @@ QtObject {
 
     /// The IPC target this instance answers on. Empty while `name` is unset.
     readonly property string ipcTarget: root.name.length === 0 ? "" : ("gs_" + root.appid + "_" + root.name).replace(/[^A-Za-z0-9_]/g, "_")
+
+    readonly property string _key: root.appid + ":" + root.name
+
+    function _register(): void {
+        if (root.name.length === 0)
+            return;
+        const all = Hyprland.shortcuts;
+        all[root._key] = root;
+        Hyprland.shortcuts = all;
+    }
+
+    Component.onCompleted: root._register()
+    on_KeyChanged: root._register()
+    Component.onDestruction: {
+        const all = Hyprland.shortcuts;
+        if (all[root._key] === root) {
+            delete all[root._key];
+            Hyprland.shortcuts = all;
+        }
+    }
 
     readonly property IpcHandler _ipc: IpcHandler {
         target: root.ipcTarget
