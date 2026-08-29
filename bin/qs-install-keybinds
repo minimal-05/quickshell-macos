@@ -49,6 +49,7 @@ ctrl + alt + cmd - k        : $ROOT/bin/qs-ipc osk toggle
 ctrl + alt + cmd - p        : $ROOT/bin/qs-ipc wallpaperSelector toggle
 ctrl + alt + cmd - e        : $ROOT/bin/qs-ipc session toggle
 ctrl + alt + cmd - 0x2C     : $ROOT/bin/qs-ipc cheatsheet toggle
+ctrl + alt + cmd - w        : $ROOT/bin/qs-ipc overlay toggle
 ctrl + alt + cmd + shift - s: $ROOT/bin/qs-ipc region screenshot
 $END
 EOF
