@@ -19,10 +19,73 @@
 #include "../window/proxywindow.hpp"
 #include "nswindow.hpp"
 
+class QQmlEngine;
+class QJSEngine;
+
 namespace qs::cocoa {
 
 class CocoaPanelStack;
 class CocoaLayershell;
+
+/// The screen space this process's panels reserve, per edge, in points.
+///
+/// On Wayland the compositor reads every layer surface's exclusive zone and
+/// keeps windows out of it. macOS reserves nothing for anyone but the menu
+/// bar and the Dock, so the shell has to tell the window manager itself. This
+/// is the sum, per edge, of `exclusiveZone` over the visible panels that are
+/// not `ExclusionMode.Ignore` -- the same figures the panels use to stack
+/// against each other -- taken per screen and published as the largest of
+/// them, because yabai's `external_bar` is one global setting.
+///
+/// With `applyToYabai` set, the backend writes `external_bar all:<top>:<bottom>`
+/// itself, debounced, whenever the totals change. `external_bar` has no left
+/// or right field, so vertical reservations are only published here for the
+/// config to fold into `left_padding`/`right_padding` together with whatever
+/// gap policy it has; padding is weaker (a zoomed window still covers it) and
+/// belongs with the config's other padding writes.
+class CocoaReservation: public QObject {
+	Q_OBJECT;
+	QML_NAMED_ELEMENT(Reservation);
+	QML_SINGLETON;
+	// clang-format off
+	Q_PROPERTY(qint32 top READ top NOTIFY changed);
+	Q_PROPERTY(qint32 bottom READ bottom NOTIFY changed);
+	Q_PROPERTY(qint32 left READ left NOTIFY changed);
+	Q_PROPERTY(qint32 right READ right NOTIFY changed);
+	/// Off by default so a throwaway instance (every probe under tests/) never
+	/// touches the desktop's window manager; the shell config turns it on.
+	Q_PROPERTY(bool applyToYabai READ applyToYabai WRITE setApplyToYabai NOTIFY applyToYabaiChanged);
+	// clang-format on
+
+public:
+	static CocoaReservation* instance();
+	static CocoaReservation* create(QQmlEngine* engine, QJSEngine* jsEngine);
+
+	[[nodiscard]] qint32 top() const { return this->mTop; }
+	[[nodiscard]] qint32 bottom() const { return this->mBottom; }
+	[[nodiscard]] qint32 left() const { return this->mLeft; }
+	[[nodiscard]] qint32 right() const { return this->mRight; }
+
+	[[nodiscard]] bool applyToYabai() const { return this->mApplyToYabai; }
+	void setApplyToYabai(bool apply);
+
+	void setTotals(qint32 top, qint32 bottom, qint32 left, qint32 right);
+
+signals:
+	void changed();
+	void applyToYabaiChanged();
+
+private:
+	explicit CocoaReservation(QObject* parent = nullptr);
+	void publish();
+
+	qint32 mTop = 0;
+	qint32 mBottom = 0;
+	qint32 mLeft = 0;
+	qint32 mRight = 0;
+	bool mApplyToYabai = false;
+	QTimer mPublishTimer;
+};
 
 class CocoaPanelEventFilter: public QObject {
 	Q_OBJECT;

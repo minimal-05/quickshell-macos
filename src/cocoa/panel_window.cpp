@@ -1,7 +1,12 @@
 #include "panel_window.hpp"
+#include <algorithm>
 #include <map>
 
 #include <qcoreapplication.h>
+#include <qprocess.h>
+#include <qstandardpaths.h>
+#include <qstring.h>
+#include <qstringlist.h>
 #include <qcursor.h>
 #include <qevent.h>
 #include <qlist.h>
@@ -52,6 +57,7 @@ public:
 		panel->engineGeneration = EngineGeneration::findObjectGeneration(panel);
 		auto& panels = this->mPanels[panel->engineGeneration];
 		if (!panels.contains(panel)) panels.push_back(panel);
+		this->publishReservation();
 	}
 
 	void removePanel(CocoaPanelWindow* panel) {
@@ -61,6 +67,7 @@ public:
 		if (panels.removeOne(panel)) {
 			if (panels.isEmpty()) {
 				this->mPanels.erase(panel->engineGeneration);
+				this->publishReservation();
 				return;
 			}
 
@@ -68,6 +75,8 @@ public:
 				other->updateDimensions();
 			}
 		}
+
+		this->publishReservation();
 	}
 
 	void updateLowerDimensions(CocoaPanelWindow* exclude) {
@@ -80,9 +89,111 @@ public:
 		}
 	}
 
+	/// Sum the zones per screen and edge and hand the largest per edge to the
+	/// Reservation singleton. Every generation counts: during a reload the old
+	/// panels are still on screen until the new ones have taken over, and the
+	/// singleton debounces the hand-over.
+	void publishReservation() {
+		struct Edges {
+			qint32 top = 0, bottom = 0, left = 0, right = 0;
+		};
+		std::map<QScreen*, Edges> screens;
+
+		for (const auto& [generation, panels]: this->mPanels) {
+			for (auto* panel: panels) {
+				if (panel->window == nullptr || !panel->window->isVisible()) continue;
+				if (panel->bExclusionMode == ExclusionMode::Ignore) continue;
+
+				auto zone = panel->bcExclusiveZone.value();
+				if (zone <= 0) continue;
+
+				auto& edges = screens[panel->mTrackedScreen.data()];
+				switch (panel->bcExclusionEdge.value()) {
+				case Qt::TopEdge: edges.top += zone; break;
+				case Qt::BottomEdge: edges.bottom += zone; break;
+				case Qt::LeftEdge: edges.left += zone; break;
+				case Qt::RightEdge: edges.right += zone; break;
+				default: break;
+				}
+			}
+		}
+
+		auto total = Edges();
+		for (const auto& [screen, edges]: screens) {
+			total.top = std::max(total.top, edges.top);
+			total.bottom = std::max(total.bottom, edges.bottom);
+			total.left = std::max(total.left, edges.left);
+			total.right = std::max(total.right, edges.right);
+		}
+
+		CocoaReservation::instance()->setTotals(total.top, total.bottom, total.left, total.right);
+	}
+
 private:
 	std::map<EngineGeneration*, QList<CocoaPanelWindow*>> mPanels;
 };
+
+// CocoaReservation
+
+namespace {
+// Settles the burst a bar position change arrives as: the settings window
+// writes its config key by key, and a panel's zone, edge and visibility each
+// settle separately.
+constexpr auto RESERVATION_DEBOUNCE_MS = 100;
+} // namespace
+
+CocoaReservation::CocoaReservation(QObject* parent): QObject(parent) {
+	this->mPublishTimer.setSingleShot(true);
+	this->mPublishTimer.setInterval(RESERVATION_DEBOUNCE_MS);
+	QObject::connect(&this->mPublishTimer, &QTimer::timeout, this, &CocoaReservation::publish);
+}
+
+CocoaReservation* CocoaReservation::instance() {
+	static auto* reservation = new CocoaReservation(QCoreApplication::instance()); // NOLINT
+	return reservation;
+}
+
+CocoaReservation* CocoaReservation::create(QQmlEngine* engine, QJSEngine* jsEngine) {
+	Q_UNUSED(engine);
+	auto* reservation = CocoaReservation::instance();
+	QJSEngine::setObjectOwnership(reservation, QJSEngine::CppOwnership);
+	Q_UNUSED(jsEngine);
+	return reservation;
+}
+
+void CocoaReservation::setTotals(qint32 top, qint32 bottom, qint32 left, qint32 right) {
+	if (top == this->mTop && bottom == this->mBottom && left == this->mLeft && right == this->mRight) {
+		return;
+	}
+
+	this->mTop = top;
+	this->mBottom = bottom;
+	this->mLeft = left;
+	this->mRight = right;
+	emit this->changed();
+
+	if (this->mApplyToYabai) this->mPublishTimer.start();
+}
+
+void CocoaReservation::setApplyToYabai(bool apply) {
+	if (apply == this->mApplyToYabai) return;
+	this->mApplyToYabai = apply;
+	emit this->applyToYabaiChanged();
+
+	// Whatever yabai has now is from before this process; put the truth there.
+	if (apply) this->mPublishTimer.start();
+}
+
+void CocoaReservation::publish() {
+	static const auto yabai = QStandardPaths::findExecutable("yabai");
+	if (yabai.isEmpty()) return;
+
+	auto value = QString("all:%1:%2").arg(this->mTop).arg(this->mBottom);
+	qInfo("cocoa: reservation top=%d bottom=%d left=%d right=%d -> yabai external_bar %s",
+	      this->mTop, this->mBottom, this->mLeft, this->mRight, qPrintable(value));
+
+	QProcess::startDetached(yabai, {"-m", "config", "external_bar", value});
+}
 
 bool CocoaPanelEventFilter::eventFilter(QObject* watched, QEvent* event) {
 	if (event->type() == QEvent::PlatformSurface) {
@@ -652,7 +763,12 @@ void CocoaPanelWindow::updateDimensions(bool propagate) {
 
 	this->window->setGeometry(geometry);
 
-	if (propagate) CocoaPanelStack::instance()->updateLowerDimensions(this);
+	if (propagate) {
+		CocoaPanelStack::instance()->updateLowerDimensions(this);
+		// Every input to the reservation -- zone, edge, screen, visibility --
+		// comes through here.
+		CocoaPanelStack::instance()->publishReservation();
+	}
 }
 
 void CocoaPanelWindow::onPolished() {

@@ -14,8 +14,6 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export PATH="$ROOT/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp/quickshell-$UID}"
 export QML2_IMPORT_PATH="$ROOT/shims${QML2_IMPORT_PATH:+:$QML2_IMPORT_PATH}"
-# A throwaway instance must not push its panel's zone into yabai.
-export QS_NO_YABAI_ZONES=1
 
 BINARY="${QS_BINARY:-$ROOT/bin/qs}"
 QML="$ROOT/tests/mask.qml"
