@@ -30,7 +30,9 @@ import sys
 import time
 from collections import Counter
 
-ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+# The checkout: two levels up from src/tools, four from inside the bundle.
+ROOT = re.sub(r"/(Quickshell\.app/Contents/Resources/tools|src/tools)$", "",
+              os.path.dirname(os.path.realpath(__file__)))
 HISTORY = os.path.join(ROOT, "tests", "perf-history.jsonl")
 RUNTIME = os.environ.get("XDG_RUNTIME_DIR") or f"/tmp/quickshell-{os.getuid()}"
 # ponytail: 250 ms ps sampling is a floor -- a child that lives <250 ms

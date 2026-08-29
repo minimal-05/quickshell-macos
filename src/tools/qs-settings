@@ -8,19 +8,12 @@
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT="$(cd "$HERE/.." && pwd)"
+# The checkout: two levels up from src/tools, four from inside the bundle.
+ROOT="${HERE%/Quickshell.app/Contents/Resources/tools}"; ROOT="${ROOT%/src/tools}"
+QS="$ROOT/Quickshell.app/Contents/MacOS/quickshell"
 CONFIG="${QS_SETTINGS_CONFIG:-$HOME/.config/quickshell/${QS_CONFIG_NAME:-end4}/settings.qml}"
 
-# skhd and launchd hand down a minimal PATH (launchctl getenv PATH is empty), so
-# without this the shell cannot find yabai, jq, media-control or SwitchAudioSource.
-# $ROOT/bin first: it carries our notify-send / xdg-open / pidof / qs stand-ins,
-# which end-4 shells out to by bare name. Keeping them here rather than
-# symlinked into /opt/homebrew means nothing is installed system-wide.
-export PATH="$ROOT/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
-
-export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp/quickshell-$UID}"
-mkdir -p "$XDG_RUNTIME_DIR"
-export QML2_IMPORT_PATH="$ROOT/shims${QML2_IMPORT_PATH:+:$QML2_IMPORT_PATH}"
+# PATH, XDG_RUNTIME_DIR and QML2_IMPORT_PATH are the binary's own doing.
 
 # The settings window is a dialog, not a tile. Labelled so repeated runs replace
 # the rule instead of stacking copies.
@@ -38,4 +31,4 @@ if pgrep -f "end4-ii/settings.qml" >/dev/null 2>&1; then
     exit 0
 fi
 
-exec "$ROOT/bin/qs" -p "$CONFIG"
+exec "$QS" -p "$CONFIG"

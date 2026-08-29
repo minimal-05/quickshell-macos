@@ -16,6 +16,9 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# The checkout: two levels up from src/tools, four from inside the bundle.
+ROOT="${HERE%/Quickshell.app/Contents/Resources/tools}"; ROOT="${ROOT%/src/tools}"
+QS="$ROOT/Quickshell.app/Contents/MacOS/quickshell"
 
 # yabai reserves space for whichever bar is running. Getting this in before the
 # shell comes up stops the desktop -- and the icons sitting on it -- showing
@@ -56,4 +59,4 @@ export QS_RESPONSIBLE="$(ps -o comm= -p "$PPID" 2>/dev/null | tail -1)"
 nohup "$HERE/qs-notify-bridge" >>"${TMPDIR:-/tmp}/qs-notify-bridge.log" 2>&1 &
 disown
 
-exec "$HERE/qs" "$@"
+exec "$QS" "$@"

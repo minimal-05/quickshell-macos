@@ -113,4 +113,12 @@ QString getDisplayConnection();
 
 int launch(const LaunchArgs& args, char** argv, QCoreApplication* coreApplication);
 
+#ifdef __APPLE__
+namespace macos {
+// Sets the environment quickshell needs on macOS, and execs a bundled tool
+// when argv[0] or argv[1] names one (never returning). See tools.cpp.
+void dispatch(int argc, char** argv);
+} // namespace macos
+#endif
+
 } // namespace qs::launch

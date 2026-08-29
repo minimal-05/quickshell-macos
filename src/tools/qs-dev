@@ -7,21 +7,25 @@
 # change costs a couple of seconds and a C++ change costs the compile.
 #
 #   qs-dev              rebuild if sources changed, reinstall, restart the shell
-#   qs-dev --no-build   just restart the shell (QML edits need nothing else)
+#   qs-dev --no-build   reinstall the tools and restart the shell (QML and
+#                       tool-script edits need nothing built)
 #   qs-dev --probe      restart, then run the hover probe
 #
 # QML under ~/.config/quickshell and shims/ is read at startup, so a restart
 # picks it up; there is nothing to build for those.
 
 set -uo pipefail
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# The checkout: two levels up from src/tools, four from inside the bundle.
+ROOT="${HERE%/Quickshell.app/Contents/Resources/tools}"; ROOT="${ROOT%/src/tools}"
+QS="$ROOT/Quickshell.app/Contents/MacOS/quickshell"
 SRC="${QS_SRC:-$ROOT}"
 CONFIG="${QS_CONFIG:-$HOME/.config/quickshell/${QS_CONFIG_NAME:-end4}/shell.qml}"
 LOG=/tmp/qs-dev.log
 
-# Only PATH, for cmake and codesign below. XDG_RUNTIME_DIR and QML2_IMPORT_PATH
-# belong to `qs`, which every launch here goes through.
-export PATH="$ROOT/bin:/opt/homebrew/bin:$PATH"
+# Only PATH, for cmake below. XDG_RUNTIME_DIR and QML2_IMPORT_PATH belong to
+# the binary, which every launch here goes through.
+export PATH="/opt/homebrew/bin:$PATH"
 
 started=$(date +%s)
 step() { printf '  %-22s %ss\n' "$1" "$(( $(date +%s) - started ))"; }
@@ -35,9 +39,14 @@ if [ "${1:-}" != "--no-build" ]; then
     step "built"
 
     # Into Quickshell.app, re-signed, staged so a running shell is never left
-    # half-written -- see bin/qs-bundle.
-    "$ROOT/bin/qs-bundle" "$SRC/build/src/quickshell" >/dev/null
+    # half-written -- see qs-bundle.
+    "$HERE/qs-bundle" "$SRC/build/src/quickshell" >/dev/null
     step "installed + signed"
+else
+    # The tools are exec'd from inside the bundle, so an edited script under
+    # src/tools/ is not live until it is copied back in.
+    "$HERE/qs-bundle" >/dev/null
+    step "tools installed"
 fi
 
 # Match the full path: every config's entry point is called shell.qml, so a
@@ -46,8 +55,8 @@ pkill -f "$CONFIG" 2>/dev/null
 sleep 1
 # The shell just killed leaves its media-control perl helper behind and its
 # runtime dir on disk; every restart adds one of each (see qs-reap).
-"$ROOT/bin/qs-reap" --quiet
-nohup "$ROOT/bin/qs" -p "$CONFIG" > "$LOG" 2>&1 &
+"$HERE/qs-reap" --quiet
+nohup "$QS" -p "$CONFIG" > "$LOG" 2>&1 &
 disown
 
 # Poll for readiness rather than sleeping a fixed guess.
@@ -65,8 +74,8 @@ else echo "  shell did NOT load — see $LOG" >&2; tail -5 "$LOG" >&2; exit 1; f
 # The launchers start the notification bridge; without this a session that only
 # ever uses qs-dev silently has no bridge and macOS notifications go nowhere. The
 # bridge holds an flock, so calling this when one is already up is a no-op.
-if [ -x "$ROOT/bin/qs-notify-bridge" ]; then
-    nohup "$ROOT/bin/qs-notify-bridge" >/dev/null 2>&1 &
+if [ -x "$HERE/qs-notify-bridge" ]; then
+    nohup "$HERE/qs-notify-bridge" >/dev/null 2>&1 &
     disown
 fi
 
@@ -75,5 +84,5 @@ errs=${errs:-0}
 echo "  errors: $errs"
 [ "$errs" -eq 0 ] || grep 'ERROR' "$LOG" | head -5
 
-[ "${1:-}" = "--probe" ] && "$ROOT/bin/qs-probe"
+[ "${1:-}" = "--probe" ] && "$HERE/qs-probe"
 exit 0

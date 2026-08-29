@@ -5,7 +5,11 @@ shell: every instance a test starts has its own root file under this directory
 (quickshell keys the instance on the root path, so a distinct basename is a
 distinct instance), and the harness kills only the pid it started.
 
-## Tools (in `bin/`)
+## Tools
+
+Every tool lives in `Quickshell.app/Contents/Resources/tools` (source:
+`src/tools/`) and is reached as `bin/<tool>` (a symlink onto `qs`) or
+`qs <tool>`; `qs --tools` lists them.
 
 - `qs-test <root.qml> [--binary p] [--timeout s] -- <target> <fn> [args] [== expected]`
   starts a throwaway instance, waits for `Configuration Loaded`, runs one
@@ -13,9 +17,9 @@ distinct instance), and the harness kills only the pid it started.
   `--expect-log 'regex'` asserts on the log instead; `--shell` starts the
   instance, prints its pid and leaves it running for multi-step drivers
   (that is how `qs-probe` uses it). Refuses `shell.qml`, `settings.qml`,
-  `finder.qml` by basename. The binary is `bin/qs` (which execs the bundle
-  binary); `QS_BINARY` points a run at another build, such as a worktree's
-  `Quickshell.app/Contents/MacOS/quickshell`.
+  `finder.qml` by basename. The binary is this tree's
+  `Quickshell.app/Contents/MacOS/quickshell`; `QS_BINARY` points a run at
+  another build, such as a worktree's.
 - `qs-probe` — the hover enter/leave table, built on `qs-test --shell`.
 - `qs-perf [pid] [seconds]` — self CPU, reaped-children CPU, spawns/s,
   interrupt wakeups/s, footprint, orphan adapters, dead instance dirs; one
@@ -33,10 +37,11 @@ distinct instance), and the harness kills only the pid it started.
 | `hoverprobe.qml` | a PanelWindow's MouseArea sees the pointer enter/leave | `bin/qs-test tests/hoverprobe.qml -- probe hover outside`, or `bin/qs-probe` for the full table |
 | `hoverprobe-focusable.qml` | same, for a focusable panel | `QS_PROBE_QML=tests/hoverprobe-focusable.qml bin/qs-probe` |
 | `reap.sh` | `qs-reap` removes exactly dead dirs and orphan adapters, in a private runtime dir | `bash tests/reap.sh` |
-| `bundle.sh` + `_probe_bundle.qml` | `Quickshell.app` is signed with id `org.quickshell.shell` and the usage strings; `bin/quickshell` is a script wrapper (not a symlink) onto the bundle Mach-O; an instance started through `bin/qs` runs that Mach-O; ipc reaches it through `qs` and through the wrapper; `qs-test` works end to end | `bash tests/bundle.sh` (always this tree's bundle; `QS_BINARY` is not consulted) |
+| `bundle.sh` + `_probe_bundle.qml` | `Quickshell.app` is signed with id `org.quickshell.shell` and the usage strings; `bin/qs` is a script (not a symlink) onto the bundle Mach-O and no `bin/quickshell` wrapper remains; an instance started through `bin/qs` runs that Mach-O; ipc reaches it through `qs` and through the bare Mach-O with no environment; `qs-test` works end to end | `bash tests/bundle.sh` (always this tree's bundle; `QS_BINARY` is not consulted) |
+| `one-binary.sh` | the one-binary layout: `bin/` is `qs` + `.gitignore` + symlinks; `qs --tools` matches `src/tools/`; every tool execs the same file through `bin/<t>` and `qs <t>` (`QS_TOOL_DRY_RUN`) and prints the same `--help` where safe; the Mach-O run as `hyprctl` is hyprctl; an instance started from an empty environment reports the PATH/XDG_RUNTIME_DIR/QML2_IMPORT_PATH the binary set; `qs ipc` reaches it; `qs-probe` 5/5 through `bin/qs` | `bash tests/one-binary.sh` (always this tree's bundle) |
 | `notifications.sh` | notify-send v2 wire protocol: `-A/-i/-u/-c/-h/-t` reach `Notification`, action invoke round-trips to the sender, `-r` replaces in place, `tracked=false` dismisses, `-w` returns on close, unclaimed notifications are dropped | `bash tests/notifications.sh` (`QS_BINARY` overrides the binary) |
-| `sysstats.sh` + `_probe_resourceusage.qml` | `bin/qs-sysstats` emits the CPU-tick/memory/swap JSON `services/ResourceUsage.qml` diffs (binary and python fallback agree, ticks are cumulative), and the service turns two samples into a CPU% with no `top` child | `bash tests/sysstats.sh` (`QS_CONFIG_ROOT`, `QS_BINARY` to point at a config checkout / built binary) |
-| `standins.sh` | every verb of the Linux-tool stand-ins (`hyprctl`, `hyprsunset`, `loginctl`/`systemctl`/`reboot`, `ydotool`, `secret-tool`, `checkupdates`): session and key verbs via `--dry-run`, gamma on a private socket, Night Shift and the focused Space put back | `bash tests/standins.sh` (`STANDINS_NO_SPACE=1` skips the Space switch) |
+| `sysstats.sh` + `_probe_resourceusage.qml` | `qs-sysstats` (compiled from `src/tools/qs-sysstats.c` into the bundle) emits the CPU-tick/memory/swap JSON `services/ResourceUsage.qml` diffs (ticks are cumulative, `bin/qs-sysstats` reaches the same tool), and the service turns two samples into a CPU% with no `top` child | `bash tests/sysstats.sh` (`QS_CONFIG_ROOT`, `QS_BINARY` to point at a config checkout / built binary) |
+| `standins.sh` | every verb of the Linux-tool stand-ins (`hyprctl`, `hyprsunset`, `loginctl`/`systemctl`/`reboot`, `ydotool`, `secret-tool`, `checkupdates`), each through its `bin/` symlink: session and key verbs via `--dry-run`, gamma on a private socket, Night Shift and the focused Space put back | `bash tests/standins.sh` (`STANDINS_NO_SPACE=1` skips the Space switch) |
 | `shims.sh` | the UPower, Bluetooth, Mpris and kirigami Icon shims answer with the shape consumers read (`_probe_*.qml`, one throwaway instance each) | `bash tests/shims.sh [upower bluetooth mpris kirigami]`; `QS_BINARY=... PERF=40` for a worktree and a spawn histogram |
 
 Add a `_probe_<name>.qml` (with `IpcHandler` functions returning strings) or

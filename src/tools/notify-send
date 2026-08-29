@@ -35,11 +35,15 @@
 
 set -uo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# The checkout: two levels up from src/tools, four from inside the bundle.
+ROOT="${HERE%/Quickshell.app/Contents/Resources/tools}"; ROOT="${ROOT%/src/tools}"
+QS="$ROOT/Quickshell.app/Contents/MacOS/quickshell"
 
 # `quickshell ipc` picks an instance by config path. A launcher that exports
 # QS_SHELL_CONFIG has named the shell; otherwise it is the default config's
-# root, the same one a bare `qs` starts (QS_CONFIG_NAME, defaulted in bin/qs).
+# root, the same one a bare `qs` starts (QS_CONFIG_NAME, defaulted by the
+# binary itself; src/launch/tools.cpp).
 config="${QS_SHELL_CONFIG:-$HOME/.config/quickshell/${QS_CONFIG_NAME:-end4}/shell.qml}"
 
 app=""
@@ -151,11 +155,11 @@ body="${args[1]-}"
 [[ "$replaces" =~ ^[0-9]+$ ]] || replaces=0
 [[ "$expire" =~ ^-?[0-9]+$ ]] || expire=-1
 
+# The same default the binary applies; the reply FIFO below lives under it.
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp/quickshell-$UID}"
-export QML2_IMPORT_PATH="$ROOT/shims${QML2_IMPORT_PATH:+:$QML2_IMPORT_PATH}"
-# `qs` by default; QS_BINARY is the same override qs-test honours, for a
-# worktree's build.
-BINARY="${QS_BINARY:-$ROOT/bin/qs}"
+# This bundle's binary by default; QS_BINARY is the same override qs-test
+# honours, for a worktree's build.
+BINARY="${QS_BINARY:-$QS}"
 
 # Reply channel: the caller's FIFO, or our own when we have to wait.
 reply=""

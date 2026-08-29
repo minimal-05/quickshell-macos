@@ -1,0 +1,104 @@
+#!/bin/bash
+# Install a built quickshell Mach-O and the tools into Quickshell.app, sign the
+# bundle, and regenerate bin/'s multicall symlinks.
+#
+#   qs-bundle <path/to/quickshell>      qs-build and qs-dev call this
+#   qs-bundle                           keep the installed Mach-O; refresh the
+#                                       tools, Info.plist, symlinks and signature
+#
+# Why a bundle: TCC (Screen Recording, Accessibility, Full Disk Access,
+# Location, Automation) records a grant against the requesting program's
+# designated requirement. A bare ad-hoc-signed binary has no stable one -- its
+# identity is the cdhash, which changes on every rebuild -- so every grant died
+# with the next build. Inside an app bundle signed with a certificate, the
+# requirement anchors on the bundle id and the certificate, and survives
+# rebuilds. See "TCC identity" in PLATFORM.md for the one-time user steps.
+#
+# Why the tools live inside it: the Mach-O finds Contents/Resources/tools from
+# its own path and runs whichever one it was started as (src/launch/tools.cpp),
+# so one binary is the shell, the Linux-command stand-ins and the helpers.
+# Directory-driven: every executable in src/tools/ is copied, every
+# src/tools/*.c is compiled (an optional first line `// cc: <flags>` supplies
+# its flags), anything else there (warp.py) rides along as a support file.
+# ponytail: scripts are exec'd from Resources; embedding them as Qt resources
+# is the upgrade path.
+#
+# QS_CODESIGN_IDENTITY names the signing identity ("Quickshell Dev" once that
+# certificate exists). Unset, the bundle is ad-hoc signed, which still runs but
+# whose grants do not survive a rebuild.
+
+set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# The checkout: two levels up from src/tools, four from inside the bundle.
+ROOT="${HERE%/Quickshell.app/Contents/Resources/tools}"; ROOT="${ROOT%/src/tools}"
+APP="$ROOT/Quickshell.app"
+EXE="$APP/Contents/MacOS/quickshell"
+TOOLS="$APP/Contents/Resources/tools"
+SRC="${1:-$EXE}"
+IDENTITY="${QS_CODESIGN_IDENTITY:--}"
+
+[ -f "$SRC" ] || { echo "qs-bundle: no such file: $SRC" >&2; exit 1; }
+
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+cp "$ROOT/assets/Quickshell.plist" "$APP/Contents/Info.plist"
+printf 'APPL????' > "$APP/Contents/PkgInfo"
+
+# Staged through a temp name so a running shell is never left half-written:
+# rename is atomic, and the old inode stays valid for the process using it.
+# With no argument SRC is the installed Mach-O itself; the copy still lands on
+# a fresh inode, so re-signing below never touches the file a live shell maps.
+cp "$SRC" "$EXE.new"
+mv "$EXE.new" "$EXE"
+
+# The tools are staged the same way, as a whole directory, so a shell that
+# spawns qs-sysstats every three seconds never sees a half-populated one.
+NEW="$TOOLS.new"
+rm -rf "$NEW" "$TOOLS.old"
+mkdir -p "$NEW"
+for src in "$ROOT/src/tools"/*; do
+    name="$(basename "$src")"
+    case "$name" in
+        *.c)
+            out="$NEW/${name%.c}"
+            old="$TOOLS/${name%.c}"
+            if [ -x "$old" ] && [ ! "$src" -nt "$old" ]; then
+                cp -p "$old" "$out"
+            else
+                echo "==> cc ${name%.c}"
+                # shellcheck disable=SC2046
+                cc -O2 -Wall $(sed -n 's|^// cc: ||p' "$src") -o "$out" "$src"
+            fi
+            # A copied or freshly linked Mach-O runs only once it is signed
+            # (see below); nested code is signed before the bundle that seals it.
+            codesign -f -s "$IDENTITY" "$out" >/dev/null 2>&1 ;;
+        *)  cp -p "$src" "$NEW/$name" ;;
+    esac
+done
+[ ! -d "$TOOLS" ] || mv "$TOOLS" "$TOOLS.old"
+mv "$NEW" "$TOOLS"
+rm -rf "$TOOLS.old"
+
+# Copying a Mach-O invalidates its signature and the kernel then kills it on
+# exec with no output at all, so this is not optional. Signing the bundle
+# (not the bare binary) seals Info.plist and Resources into the signature,
+# which is what ties the bundle id to the code for TCC.
+codesign -f -s "$IDENTITY" "$APP" >/dev/null 2>&1 \
+    || { echo "qs-bundle: codesign with identity '$IDENTITY' failed" >&2; codesign -f -s "$IDENTITY" "$APP"; exit 1; }
+
+# bin/: qs plus one symlink onto it per tool, so PATH keeps its one entry and
+# the absolute paths skhd, karabiner and launchd hold (bin/qs-ipc, bin/qs-start)
+# keep working. Stale links go; so do the artefacts of the pre-bundle layout.
+rm -rf "$ROOT/bin/quickshell" "$ROOT/bin/menus" "$ROOT/bin/qs-sysstats.bin" "$ROOT/bin/__pycache__"
+for link in "$ROOT/bin"/*; do
+    if [ -L "$link" ] && [ ! -x "$TOOLS/$(basename "$link")" ]; then rm -f "$link"; fi
+done
+count=0
+for tool in "$TOOLS"/*; do
+    if [ -f "$tool" ] && [ -x "$tool" ]; then
+        ln -sfn qs "$ROOT/bin/$(basename "$tool")"
+        count=$((count + 1))
+    fi
+done
+
+echo "==> $EXE ($(codesign -dv "$APP" 2>&1 | sed -n 's/^Identifier=//p'), signed: $([ "$IDENTITY" = - ] && echo ad-hoc || echo "$IDENTITY"), $count tools)"

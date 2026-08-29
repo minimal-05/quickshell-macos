@@ -14,7 +14,7 @@ parses it is unchanged.
   hyprctl keyword <name> <value>            accepted, no-op (no Hyprland config)
   hyprctl reload                            accepted, no-op
   hyprctl hyprsunset temperature [K]        Night Shift via `nightlight`
-  hyprctl hyprsunset gamma <25-100>         bin/hyprsunset daemon
+  hyprctl hyprsunset gamma <25-100>         hyprsunset daemon
   hyprctl [--dry-run] ...                   print the command that would run
 """
 import ctypes

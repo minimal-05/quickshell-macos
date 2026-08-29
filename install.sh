@@ -24,7 +24,9 @@ command -v matugen >/dev/null || \
   echo "  note: matugen not found — 'qs-matugen' needs it (cargo install matugen)"
 
 say "Building"
-bin/qs-build
+# Nothing in bin/ but qs exists yet; it runs the build tool from src/tools/
+# until Quickshell.app is there, then bin/qs-build is a symlink onto it.
+bin/qs qs-build
 
 say "Installing qs"
 # An exec wrapper, not a symlink: ~/.local/bin is already on PATH, and a wrapper
@@ -48,13 +50,13 @@ else
   echo "    git clone https://github.com/minimal-05/darwin-dotfiles.git ~/.config"
 fi
 
-# The launchers are referenced by absolute path from karabiner.json and skhdrc.
+# The tools are referenced by absolute path from karabiner.json and skhdrc.
 say "Done"
 cat <<EOF
 
   Application: $ROOT/Quickshell.app
   Command:     $HOME/.local/bin/qs  ->  $ROOT/bin/qs
-  Launchers:   $ROOT/bin/qs-*
+  Tools:       $ROOT/bin/<tool> -> qs   (qs --tools lists them; qs <tool> runs one)
 
   A config is a directory under ~/.config/quickshell, run by name:
 
@@ -64,5 +66,6 @@ cat <<EOF
 
   If you keep this repo somewhere other than ~/Projects/quickshell-macos,
   update the absolute paths in ~/.config/karabiner/karabiner.json and
-  ~/.config/skhd/skhdrc — they call bin/qs-ipc directly.
+  ~/.config/skhd/skhdrc — they call bin/qs-ipc directly (qs-install-keybinds
+  rewrites the skhd block).
 EOF

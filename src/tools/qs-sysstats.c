@@ -1,12 +1,13 @@
 // qs-sysstats: one JSON line of system counters for the shell's ResourceUsage
 // service. Replaces `top -l 1 -n 0` (~0.26 s CPU per run) with four Mach/sysctl
-// calls (~1 ms). Built by bin/qs-build into bin/qs-sysstats.bin.
+// calls (~1 ms). qs-bundle compiles it into
+// Quickshell.app/Contents/Resources/tools/qs-sysstats.
 //
 // CPU ticks are cumulative since boot, like the `cpu` line of /proc/stat, so
 // the caller diffs consecutive samples: usage = 1 - d(idle)/d(total).
 // Memory "used" is (active + wired + compressor) pages, Activity Monitor's
 // definition rather than top's PhysMem (which counts file cache as used).
-// All memory sizes are bytes. Build: cc -O2 -o qs-sysstats.bin qs-sysstats.c
+// All memory sizes are bytes. Build: cc -O2 -o qs-sysstats qs-sysstats.c
 #include <mach/mach.h>
 #include <stdio.h>
 #include <stdlib.h>
