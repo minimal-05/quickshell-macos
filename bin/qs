@@ -1,0 +1,75 @@
+#!/bin/bash
+# The Quickshell command. Everything in this repo goes through it, and so does
+# end-4's QML, which shells out to `qs` by bare name in a dozen places.
+#
+#   qs                      run the default config (QS_CONFIG_NAME, below)
+#   qs -c mine              run ~/.config/quickshell/mine/shell.qml
+#   qs -p ~/some/shell.qml  run a config by path
+#   qs ipc call bar toggle  talk to the running shell
+#
+# It is committed rather than generated. It used to be a two-line wrapper that
+# qs-build wrote out and .gitignore hid, which meant the one command everything
+# calls had no history and did not exist in a fresh checkout until something
+# built. The binary is the generated artefact; this is not.
+#
+# Three things quickshell needs on macOS that it gets for free on Linux:
+#   PATH              launchd and skhd hand down a minimal one (launchctl getenv
+#                     PATH is empty), so without this the shell finds neither
+#                     yabai/jq/media-control nor our own stand-ins. $ROOT/bin
+#                     goes first: it carries notify-send, xdg-open, pidof and
+#                     menus, which end-4 calls by bare name. Nothing is
+#                     installed system-wide to make that work.
+#   XDG_RUNTIME_DIR   the Linux default is /run/user/$UID, which does not exist
+#                     here; without it quickshell segfaults on startup.
+#   QML2_IMPORT_PATH  where the shims for Linux-only Quickshell modules live.
+
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+export PATH="$ROOT/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp/quickshell-$UID}"
+mkdir -p "$XDG_RUNTIME_DIR"
+
+export QML2_IMPORT_PATH="$ROOT/shims${QML2_IMPORT_PATH:+:$QML2_IMPORT_PATH}"
+
+# The binary reads QS_CONFIG_NAME as --config, so a bare `qs` (and every
+# `qs ipc call` that has to find the same instance) lands on the desktop shell
+# without any caller repeating a path.
+#
+# Only when the caller has not selected a config itself, though: the binary
+# declares --path and --config mutually exclusive, and it does not care that one
+# of them came from the environment. Exporting this unconditionally makes every
+# `qs -p ...` die with "--path excludes --config" -- which is most of the
+# launchers here. So when an explicit selection is present, get out of its way.
+#
+# This is the only place the default config name is written down. Configs are
+# directories under ~/.config/quickshell -- `end4` is upstream's, adapted;
+# `mine` is the small one. See the config table in this repo's CLAUDE.md.
+qs_config_selected() {
+    local arg
+    for arg in "$@"; do
+        case "$arg" in
+            -c|-p|-m|--config|--path|--manifest) return 0 ;;
+            -c*|-p*|-m*|--config=*|--path=*|--manifest=*) return 0 ;;
+        esac
+    done
+    return 1
+}
+
+if qs_config_selected "$@"; then
+    unset QS_CONFIG_NAME QS_CONFIG_PATH
+else
+    export QS_CONFIG_NAME="${QS_CONFIG_NAME:-end4}"
+fi
+
+# The bundle's real path, not a symlink and not bin/quickshell: NSBundle
+# resolves the bundle from the executable's actual location, so exec'ing
+# anything outside Quickshell.app leaves the process with no bundle -- and TCC
+# then has no stable identity to hang Screen Recording and Accessibility on.
+# Falls back to the loose binary for a tree built before the bundle existed.
+QS_EXE="$ROOT/Quickshell.app/Contents/MacOS/quickshell"
+[ -x "$QS_EXE" ] || QS_EXE="$ROOT/bin/quickshell"
+
+exec "$QS_EXE" "$@"

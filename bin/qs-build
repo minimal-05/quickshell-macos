@@ -1,8 +1,11 @@
 #!/bin/bash
 # Build Quickshell for macOS from this checkout.
 #
-#   qs-build              build into ./build and install into bin/
+#   qs-build              build into ./build and install into Quickshell.app
 #   qs-build --clean      discard the build directory first
+#
+# QS_CODESIGN_IDENTITY="Quickshell Dev" signs the bundle with that certificate
+# so TCC grants survive rebuilds (PLATFORM.md, "TCC identity"); unset = ad-hoc.
 #
 # The Cocoa backend lives in src/cocoa/ in this repo. Edit it and re-run.
 
@@ -29,11 +32,18 @@ cmake -B "$BUILD" -S "$ROOT" -G Ninja \
 echo "==> building"
 cmake --build "$BUILD" -j"$(sysctl -n hw.ncpu)"
 
-echo "==> installing to $ROOT/bin/quickshell"
-cp "$BUILD/src/quickshell" "$ROOT/bin/quickshell"
+# Into Quickshell.app rather than loose in bin/, so TCC keys its grants on a
+# stable bundle id instead of a cdhash that changes every build. qs-bundle also
+# writes bin/quickshell as the wrapper onto it.
+"$ROOT/bin/qs-bundle" "$BUILD/src/quickshell"
 
-# Copying a Mach-O binary invalidates its ad-hoc signature and the kernel then
-# kills it on exec with no output at all. Re-sign every time.
-codesign -f -s - "$ROOT/bin/quickshell"
+# The AX helper behind the menu bar (services/MacMenus.qml), found on PATH as
+# `menus`. Two files and a clang call, so it rides along with the main build
+# rather than owning a step of its own. It came from the SketchyBar config,
+# which is gone.
+echo "==> helpers"
+make -s -C "$ROOT/helpers/menus" >/dev/null
+cp "$ROOT/helpers/menus/bin/menus" "$ROOT/bin/menus"
+codesign -f -s - "$ROOT/bin/menus" >/dev/null 2>&1 || true
 
-"$ROOT/bin/quickshell" --version
+"$ROOT/bin/qs" --version

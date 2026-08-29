@@ -9,7 +9,7 @@ set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
-CONFIG="${QS_SETTINGS_CONFIG:-$ROOT/examples/end4-ii/settings.qml}"
+CONFIG="${QS_SETTINGS_CONFIG:-$HOME/.config/quickshell/${QS_CONFIG_NAME:-end4}/settings.qml}"
 
 # skhd and launchd hand down a minimal PATH (launchctl getenv PATH is empty), so
 # without this the shell cannot find yabai, jq, media-control or SwitchAudioSource.
@@ -38,4 +38,4 @@ if pgrep -f "end4-ii/settings.qml" >/dev/null 2>&1; then
     exit 0
 fi
 
-exec "$ROOT/bin/quickshell" -p "$CONFIG"
+exec "$ROOT/bin/qs" -p "$CONFIG"

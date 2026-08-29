@@ -21,11 +21,11 @@ set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-# `quickshell ipc` picks an instance by config path, and qs-switch can start
+# `quickshell ipc` picks an instance by config path, and qs-start can start
 # either shell, so try both rather than guessing.
 configs=()
 [ -n "${QS_SHELL_CONFIG:-}" ] && configs+=("$QS_SHELL_CONFIG")
-configs+=("$HOME/.config/quickshell/shell.qml")
+configs+=("$HOME/.config/quickshell/${QS_CONFIG_NAME:-end4}/shell.qml")
 
 app=""
 icon=""
@@ -83,7 +83,7 @@ export QML2_IMPORT_PATH="$ROOT/shims${QML2_IMPORT_PATH:+:$QML2_IMPORT_PATH}"
 
 for config in "${configs[@]}"; do
     [ -f "$config" ] || continue
-    if id="$("$ROOT/bin/quickshell" -p "$config" ipc call notifications notify \
+    if id="$("$ROOT/bin/qs" -p "$config" ipc call notifications notify \
                 "$app" "$title" "$body" "$icon" "$urgency" "$expire" "$transient" 2>/dev/null)" \
        && [ -n "$id" ]; then
         $print_id && printf '%s\n' "$id"

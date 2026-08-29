@@ -13,7 +13,7 @@ set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
-CONFIG="${QS_PREVIEW_CONFIG:-$HOME/.config/quickshell/preview.qml}"
+CONFIG="${QS_PREVIEW_CONFIG:-$HOME/.config/quickshell/${QS_CONFIG_NAME:-end4}/preview.qml}"
 
 START_HIDDEN=0
 FILE=""
@@ -62,12 +62,12 @@ if preview_running; then
     # Closing the window only hides it, so the running process may have nothing
     # on screen to focus -- ask it to show itself rather than hunting a window.
     if [ -n "$FILE" ]; then
-        exec "$ROOT/bin/quickshell" -p "$CONFIG" ipc call preview open "$FILE"
+        exec "$ROOT/bin/qs" -p "$CONFIG" ipc call preview open "$FILE"
     fi
-    exec "$ROOT/bin/quickshell" -p "$CONFIG" ipc call preview present
+    exec "$ROOT/bin/qs" -p "$CONFIG" ipc call preview present
 fi
 
 [ "$START_HIDDEN" = "1" ] && export QS_PREVIEW_START_HIDDEN=1
 export QS_PREVIEW_PATH="$FILE"
 
-exec "$ROOT/bin/quickshell" -p "$CONFIG"
+exec "$ROOT/bin/qs" -p "$CONFIG"

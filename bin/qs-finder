@@ -9,7 +9,7 @@ set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
-CONFIG="${QS_FINDER_CONFIG:-$HOME/.config/quickshell/finder.qml}"
+CONFIG="${QS_FINDER_CONFIG:-$HOME/.config/quickshell/${QS_CONFIG_NAME:-end4}/finder.qml}"
 
 # --hidden: start the process without showing a window. The login agent uses this
 # so that the first time you actually open Files, the process is already warm --
@@ -65,9 +65,9 @@ finder_running() {
 # every other Mac app behaves -- not a jump back to the one that is open.
 present() {
     if [ -n "$PICK_MODE" ]; then
-        "$ROOT/bin/quickshell" -p "$CONFIG" ipc call finder pickWallpaper "$PICK_MODE" >/dev/null 2>&1
+        "$ROOT/bin/qs" -p "$CONFIG" ipc call finder pickWallpaper "$PICK_MODE" >/dev/null 2>&1
     else
-        "$ROOT/bin/quickshell" -p "$CONFIG" ipc call finder newWindow >/dev/null 2>&1
+        "$ROOT/bin/qs" -p "$CONFIG" ipc call finder newWindow >/dev/null 2>&1
     fi
 }
 
@@ -91,7 +91,7 @@ fi
 if [ -n "$PICK_MODE" ]; then
     # Hidden, so the pick lands in the warm window rather than beside a plain
     # one nobody asked for.
-    QS_FINDER_START_HIDDEN=1 "$ROOT/bin/quickshell" -p "$CONFIG" &
+    QS_FINDER_START_HIDDEN=1 "$ROOT/bin/qs" -p "$CONFIG" &
     for _ in $(seq 1 40); do
         sleep 0.25
         present && exit 0
@@ -99,4 +99,4 @@ if [ -n "$PICK_MODE" ]; then
     exit 1
 fi
 
-exec "$ROOT/bin/quickshell" -p "$CONFIG"
+exec "$ROOT/bin/qs" -p "$CONFIG"

@@ -21,7 +21,7 @@ PROBE_QML="${QS_PROBE_QML:-$ROOT/tests/hoverprobe.qml}"
 PROBE_PAT="$(basename "$PROBE_QML")"
 pkill -f "$PROBE_PAT" 2>/dev/null
 sleep 1
-nohup "$ROOT/bin/quickshell" -p "$PROBE_QML" > "$LOG" 2>&1 &
+nohup "$ROOT/bin/qs" -p "$PROBE_QML" > "$LOG" 2>&1 &
 disown
 
 # Poll for readiness instead of sleeping a fixed amount.
@@ -32,7 +32,7 @@ done
 PID="$(pgrep -f "$PROBE_PAT" | head -1)"
 [ -n "$PID" ] || { echo "probe failed to start; see $LOG" >&2; exit 1; }
 
-ask() { "$ROOT/bin/quickshell" ipc --pid "$PID" call probe "$1" 2>/dev/null | tr -d '\r\n'; }
+ask() { "$ROOT/bin/qs" ipc --pid "$PID" call probe "$1" 2>/dev/null | tr -d '\r\n'; }
 move() { /usr/bin/python3 "$WARP" "$1" "$2" >/dev/null 2>&1; sleep 0.6; }
 
 pass=0; fail=0

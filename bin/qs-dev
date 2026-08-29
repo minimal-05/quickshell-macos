@@ -10,19 +10,18 @@
 #   qs-dev --no-build   just restart the shell (QML edits need nothing else)
 #   qs-dev --probe      restart, then run the hover probe
 #
-# QML under examples/ and shims/ is read at startup, so a restart picks it up;
-# there is nothing to build for those.
+# QML under ~/.config/quickshell and shims/ is read at startup, so a restart
+# picks it up; there is nothing to build for those.
 
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SRC="${QS_SRC:-$ROOT}"
-CONFIG="${QS_CONFIG:-$HOME/.config/quickshell/shell.qml}"
+CONFIG="${QS_CONFIG:-$HOME/.config/quickshell/${QS_CONFIG_NAME:-end4}/shell.qml}"
 LOG=/tmp/qs-dev.log
 
+# Only PATH, for cmake and codesign below. XDG_RUNTIME_DIR and QML2_IMPORT_PATH
+# belong to `qs`, which every launch here goes through.
 export PATH="$ROOT/bin:/opt/homebrew/bin:$PATH"
-export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp/quickshell-$UID}"
-export QML2_IMPORT_PATH="$ROOT/shims"
-mkdir -p "$XDG_RUNTIME_DIR"
 
 started=$(date +%s)
 step() { printf '  %-22s %ss\n' "$1" "$(( $(date +%s) - started ))"; }
@@ -35,25 +34,24 @@ if [ "${1:-}" != "--no-build" ]; then
     fi
     step "built"
 
-    # Copying a Mach-O invalidates its signature and the kernel then kills the
-    # process with no output at all, so re-signing is not optional. Staged
-    # through a temp name so a running shell is never left half-written.
-    cp "$SRC/build/src/quickshell" "$ROOT/bin/quickshell.new"
-    codesign -f -s - "$ROOT/bin/quickshell.new" >/dev/null 2>&1
-    mv "$ROOT/bin/quickshell.new" "$ROOT/bin/quickshell"
+    # Into Quickshell.app, re-signed, staged so a running shell is never left
+    # half-written -- see bin/qs-bundle.
+    "$ROOT/bin/qs-bundle" "$SRC/build/src/quickshell" >/dev/null
     step "installed + signed"
 fi
 
-pkill -f "$(basename "$CONFIG")" 2>/dev/null
+# Match the full path: every config's entry point is called shell.qml, so a
+# basename match would take out the other config's instance too.
+pkill -f "$CONFIG" 2>/dev/null
 sleep 1
-nohup "$ROOT/bin/quickshell" -p "$CONFIG" > "$LOG" 2>&1 &
+nohup "$ROOT/bin/qs" -p "$CONFIG" > "$LOG" 2>&1 &
 disown
 
 # Poll for readiness rather than sleeping a fixed guess.
 ready=0
 for _ in $(seq 1 120); do
     if grep -q 'Configuration Loaded' "$LOG" 2>/dev/null; then ready=1; break; fi
-    pgrep -f "$(basename "$CONFIG")" >/dev/null || break
+    pgrep -f "$CONFIG" >/dev/null || break
     sleep 0.25
 done
 

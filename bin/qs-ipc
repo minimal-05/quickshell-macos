@@ -1,28 +1,25 @@
 #!/bin/bash
-# Call an IPC target on the running end-4 shell.
+# Call an IPC target on the running shell.
 #
 #   qs-ipc bar toggle
 #   qs-ipc sidebarLeft toggle
 #   qs-ipc region screenshot
 #
 # On Linux these actions are bound through Hyprland's GlobalShortcut protocol.
-# macOS has no equivalent, so skhd calls this instead — the shell exposes the
-# same actions over its IPC socket either way.
+# macOS has no equivalent, so skhd and karabiner call this instead — the shell
+# exposes the same actions over its IPC socket either way. Both call it by
+# absolute path, because Karabiner does not expand `~`; keep the name.
+#
+# The env and the config this targets are `qs`'s business, not ours: it defaults
+# QS_CONFIG_NAME, so this lands on the same instance a bare `qs` would start.
+# Set QS_CONFIG_NAME to talk to a different one.
+#
+# ponytail: one extra bash exec per keypress on skhd's repeat path. It is noise
+# next to spawning the Qt binary that actually makes the call; inline the env
+# here only if that ever stops being true.
 
 set -uo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-CONFIG="${QS_SHELL_CONFIG:-$HOME/.config/quickshell/shell.qml}"
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# skhd and launchd hand down a minimal PATH (launchctl getenv PATH is empty), so
-# without this the shell cannot find yabai, jq, media-control or SwitchAudioSource.
-# $ROOT/bin first: it carries our notify-send / xdg-open / pidof / qs stand-ins,
-# which end-4 shells out to by bare name. Keeping them here rather than
-# symlinked into /opt/homebrew means nothing is installed system-wide.
-export PATH="$ROOT/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
-
-export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp/quickshell-$UID}"
-mkdir -p "$XDG_RUNTIME_DIR"
-export QML2_IMPORT_PATH="$ROOT/shims${QML2_IMPORT_PATH:+:$QML2_IMPORT_PATH}"
-
-exec "$ROOT/bin/quickshell" -p "$CONFIG" ipc call "$@"
+exec "$HERE/qs" ipc call "$@"

@@ -13,7 +13,7 @@ so this polls that store -- there is no API to subscribe to it -- and replays
 each new row through notify-send, which hands it to the running shell over IPC,
 the stand-in for the session bus.
 
-Started and stopped with the shell by qs-switch and qs-start; running it by hand
+Started and stopped with the shell by qs-start; running it by hand
 is only useful for debugging. It holds a lock so a second copy exits at once,
 and it exits by itself once the shell has been gone for SHELL_GRACE seconds, so
 neither a restart nor a crash can leave an orphan polling forever.
@@ -49,7 +49,7 @@ INTERVAL = 2.0
 # Notification uuids remembered on disk, so a restart cannot replay what the
 # previous run already forwarded.
 SEEN_LIMIT = 300
-# qs-dev and qs-switch stop and restart the shell in place; don't quit over that
+# qs-dev stops and restarts the shell in place; don't quit over that
 # gap, only over a shell that is really gone.
 SHELL_GRACE = 20.0
 # How long reads may keep failing before that counts as lost access rather than

@@ -17,7 +17,8 @@ git clone https://github.com/minimal-05/quickshell-macos.git ~/Projects/quickshe
 cd ~/Projects/quickshell-macos && ./install.sh
 ```
 
-Builds the engine, code-signs it, and drops it at `bin/quickshell`.
+Builds the engine into `Quickshell.app`, code-signs the bundle, and puts `qs`
+on your PATH at `~/.local/bin/qs`.
 
 ## What's here
 
@@ -25,15 +26,26 @@ Builds the engine, code-signs it, and drops it at `bin/quickshell`.
 |---|---|
 | `src/cocoa/` | the macOS platform backend — panels, layer-shell equivalent, focus grabs, app icons |
 | `shims/` | QML stand-ins for `Quickshell.Hyprland`, `Quickshell.Bluetooth` and friends |
-| `bin/qs-*` | launchers: build, dev-loop, IPC, notification bridge, palette generation |
+| `bin/qs` | **the command.** env, config resolution, execs the bundle binary |
+| `bin/qs-*` | launchers: build, bundle, dev-loop, IPC, notification bridge, palette generation |
+| `helpers/` | small native helpers built into `bin/` — `menus`, the AX helper behind the menu bar |
 | `PLATFORM.md` | **read this to extend the port** — where the platform seam is, what must be C++ |
 
 Everything else is upstream.
 
 ## Running a shell
 
-`bin/qs-switch mine` runs the config at `~/.config/quickshell`, which lives in
-my [darwin-dotfiles](https://github.com/minimal-05/darwin-dotfiles).
+A config is a directory under `~/.config/quickshell`, run by name:
+
+```sh
+qs -c end4      # end-4's illogical-impulse, adapted — the full desktop
+qs -c mine      # a small single-file bar
+qs-start        # what launchd runs at login: bridge + yabai, then qs
+```
+
+Both live in my [darwin-dotfiles](https://github.com/minimal-05/darwin-dotfiles).
+The binary and the config are deliberately separate: `qs` is one installed
+application and a config is just a directory you point it at.
 
 ## Development
 
@@ -44,13 +56,17 @@ bin/qs-dev --no-build   # QML-only edits need nothing built
 
 ## Notes
 
-- The build is ad-hoc code-signed. Copying a Mach-O binary invalidates its
-  signature and the kernel then kills it on exec **with no output at all**, so
-  `qs-build` re-signs every time. If Quickshell dies silently, check that first.
+- The binary lives in `Quickshell.app` so TCC has a stable identity to hang
+  Screen Recording, Accessibility and Full Disk Access on — a bare ad-hoc binary
+  is identified by its cdhash, so every grant died at the next rebuild. Set
+  `QS_CODESIGN_IDENTITY` to sign with a real certificate; unset is ad-hoc, which
+  runs but does not keep its grants. Copying a Mach-O invalidates its signature
+  and the kernel then kills it on exec **with no output at all**, so `qs-bundle`
+  re-signs every time. If Quickshell dies silently, check that first.
 - Media keys are grabbed by Karabiner and routed to `bin/qs-ipc`, which is why
   macOS never draws its own volume/brightness HUD. The OSD is signal-driven, so
   new bindings belong at the key, not at the HUD.
-- The shell config (end-4's illogical-impulse, adapted) is **not** here. It
-  lives in `~/.config/quickshell`, tracked in `darwin-dotfiles`. Upstream it is
+- The shell configs are **not** here. They live in `~/.config/quickshell/<name>`,
+  tracked in `darwin-dotfiles`. Upstream end-4's is
   [end-4/dots-hyprland](https://github.com/end-4/dots-hyprland); note that our
   copy is flattened — `modules/bar`, not `modules/ii/bar`.

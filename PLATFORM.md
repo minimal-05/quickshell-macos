@@ -177,3 +177,106 @@ cross-platform Quickshell.
   out upstream and must stay that way.
 - `Quickshell.WindowManager` compiles on macOS but only speaks ext-workspace-v1,
   so it is present and permanently empty rather than absent.
+
+## TCC identity
+
+macOS records every privacy grant (Screen Recording, Accessibility, Full Disk
+Access, Location, Automation) against the requesting program's *designated
+requirement*. For a bare ad-hoc-signed binary that requirement is the cdhash,
+so every rebuild produced a new program and every grant died with it — the
+shell's `screencapture` path, SSID, weather GPS and the notification bridge
+all broke after the next `qs-build`. Inside a bundle signed with a certificate
+the requirement is "bundle id `org.quickshell.shell`, signed by this
+certificate", which a rebuild does not change.
+
+`bin/qs-bundle` (called by `qs-build` and `qs-dev`) builds the bundle, signs it
+with `$QS_CODESIGN_IDENTITY` or ad-hoc when that is unset, and rewrites
+`bin/quickshell` as the wrapper. Ad-hoc signing works today but keeps the
+per-build identity. Two one-time steps make it stable — these need the user's
+keychain and the System Settings UI, so nothing here does them for you.
+
+### 1. Create the "Quickshell Dev" code-signing certificate (once)
+
+Keychain Access → menu **Keychain Access → Certificate Assistant → Create a
+Certificate…**
+
+- Name: `Quickshell Dev`
+- Identity Type: `Self Signed Root`
+- Certificate Type: **`Code Signing`**
+- Leave "Let me override defaults" unchecked → **Create**.
+
+It lands in the *login* keychain. Check with:
+
+```sh
+security find-identity -v -p codesigning     # lists "Quickshell Dev"
+```
+
+Then build with it, and export the variable in the shell you build from
+(`~/.zshenv`, or the environment of whatever runs `qs-build`):
+
+```sh
+export QS_CODESIGN_IDENTITY="Quickshell Dev"
+bin/qs-build
+codesign -dvv Quickshell.app 2>&1 | grep Authority     # Authority=Quickshell Dev
+```
+
+The first `codesign` with a new certificate pops a keychain dialog asking to
+let `codesign` use the key: choose **Always Allow**, or every rebuild asks
+again.
+
+Command-line alternative: an OpenSSL self-signed certificate with the
+code-signing EKU, imported into the login keychain. The PKCS#12 must use the
+legacy PBE algorithms or `security import` rejects it ("MAC verification
+failed"), and the final `add-trusted-cert` opens an authorization dialog —
+until the certificate is trusted, `find-identity -v` lists nothing and
+`codesign` reports "no identity found".
+
+```sh
+cd "$(mktemp -d)"
+cat > ext.cnf <<'CNF'
+[req]
+distinguished_name = dn
+x509_extensions = ext
+prompt = no
+[dn]
+CN = Quickshell Dev
+[ext]
+keyUsage = critical, digitalSignature
+extendedKeyUsage = critical, codeSigning
+basicConstraints = critical, CA:false
+CNF
+openssl req -x509 -newkey rsa:2048 -nodes -days 3650 -config ext.cnf \
+    -keyout key.pem -out cert.pem
+openssl pkcs12 -export -inkey key.pem -in cert.pem -name "Quickshell Dev" \
+    -keypbe PBE-SHA1-3DES -certpbe PBE-SHA1-3DES -macalg sha1 \
+    -passout pass:qs -out qs.p12
+security import qs.p12 -k ~/Library/Keychains/login.keychain-db -P qs \
+    -T /usr/bin/codesign
+security add-trusted-cert -p codeSign -k ~/Library/Keychains/login.keychain-db cert.pem
+security find-identity -v -p codesigning        # now lists "Quickshell Dev"
+```
+
+### 2. Grant the permissions to Quickshell.app (once)
+
+System Settings → **Privacy & Security**. In each list press **+** (or drag
+`Quickshell.app` from the repo root into the list) and enable the toggle:
+
+- **Screen Recording** — window thumbnails (`qs-window-thumbs`), the
+  screenshot / region tools, `ScreencopyView`.
+- **Accessibility** — event taps, focus grabs, window management helpers.
+- **Full Disk Access** — the notification bridge reads Notification Center's
+  database.
+- **Location Services** — the weather widget; this one prompts on first use
+  rather than needing to be added by hand, once the app is signed.
+- **Automation** — prompts per target application (System Events, Music, …)
+  the first time an `osascript` runs; there is nothing to add in advance.
+
+Screen Recording and Accessibility changes need the shell restarted
+(`qs-start`) before they take effect. After a rebuild with the
+certificate in place nothing needs re-granting; after a rebuild *without* it
+(ad-hoc), every one of these has to be redone, which is why step 1 exists.
+
+Which program macOS holds responsible for a subprocess's request is inherited
+from the process that launched it, so launch the shell through `qs-start` /
+`qs-start` (which exec the bundle binary through `qs`) rather than from a
+terminal, whose own grants would otherwise be the ones consulted.

@@ -14,9 +14,15 @@
 /.envrc
 /.direnv/
 
-# macOS fork: build artifacts and third-party config
+# macOS fork: build artifacts.
+# bin/qs is NOT here -- it is the committed entry point, not a generated wrapper.
+# Quickshell.app is generated in full by bin/qs-bundle (Info.plist from
+# assets/Quickshell.plist, the Mach-O, the signature); bin/quickshell is the
+# wrapper onto it. bin/menus is built from helpers/menus by qs-build.
+/Quickshell.app/
 /bin/quickshell
-/bin/qs
+/bin/menus
+/helpers/menus/bin/
 /bin/__pycache__
 /shell
 /proof-*.png
