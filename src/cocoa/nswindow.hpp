@@ -78,11 +78,67 @@ bool processOwnsPanels();
 /// window.
 void applyUndecoratedChrome(WId view);
 
+/// Clear the native background of a transparent popup window.
+///
+/// registerPanel() does this for panels, but a PopupWindow is not a panel and
+/// never goes through it, so nothing ever cleared NSWindow.opaque for one. Qt
+/// gives the surface an alpha channel when `color` is translucent but leaves
+/// the NSWindow opaque, and the window then paints its default background --
+/// which is why a `color: "transparent"` popup showed up as a slab of dark
+/// grey the size of the whole popup window, not the card drawn inside it.
+///
+/// Applies to popups only. A transparent popup draws its own rounded card and
+/// its own shadow, so the native shadow goes too; it would otherwise outline
+/// the invisible window rectangle.
+void applyPopupChrome(WId view);
+
+/// Make the panel backing @p view the key window.
+///
+/// Qt backs these with a plain QNSWindow rather than an NSPanel, so the
+/// non-activating panel style registerPanel wants never applies, and
+/// -makeKeyWindow does nothing while the process is inactive. A shell is an
+/// accessory with no dock icon or menu bar, so activating it is invisible apart
+/// from the keyboard going where the user just asked it to go.
+void focusPanel(WId view);
+
+/// Hand activation back to the application that was frontmost before
+/// focusPanel() ran. No-op if nothing was recorded.
+void unfocusPanel();
+
 /// Stop tracking a window previously passed to registerPanel.
 void unregisterPanel(WId view);
 
 /// Re-apply native state to every registered window.
 void reapplyPanels();
+
+/// True while an interactive screen capture is waiting on the user.
+///
+/// The panel and popup pointer pollers synthesise mouse moves into Qt from the
+/// cursor position, because AppKit only routes pointer events to the frontmost
+/// application and a shell is an accessory that never is. That deliberately
+/// bypasses event routing entirely -- which also means nothing in front of the
+/// panels can take the pointer away from them. Under `screencapture -i`, the
+/// crosshair the whole screen is supposed to be frozen behind, the bar and dock
+/// went on hovering: dropdowns opened under the crosshair and the shot caught
+/// them. The pollers hold still while this is true.
+bool interactiveScreenCaptureActive();
+
+/// Bring native hit-testing in step with the capture state, and report it.
+///
+/// Guarding the pointer pollers is not enough on its own. registerPanel installs
+/// an NSTrackingArea with NSTrackingActiveAlways -- hover must not depend on
+/// being the active application, because a shell never is -- and AppKit delivers
+/// to it on real pointer movement no matter which application owns the screen.
+/// Synthetic moves never exercise that path (see bin/qs-probe), which is exactly
+/// why guarding the pollers alone looked like a complete fix and was not.
+bool syncCaptureInertness();
+
+/// True while any mouse button is down anywhere on the desktop.
+///
+/// Asked of the window server, not of QGuiApplication::mouseButtons(): that
+/// only knows about presses Qt itself processed, and a shell's panels sit under
+/// other applications' windows, so a press Qt never saw still holds the button.
+bool anyMouseButtonHeld();
 
 /// Run without a dock icon or application menu bar.
 void setAccessoryActivationPolicy();

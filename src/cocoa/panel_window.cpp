@@ -162,6 +162,29 @@ void ensurePointerPoller() {
 	timer->setInterval(POINTER_POLL_MS);
 
 	QObject::connect(timer, &QTimer::timeout, [] {
+		// A drag is not a hover. The move synthesised below carries no buttons, so
+		// one landing mid-drag reads as "the pointer moved with nothing pressed":
+		// Qt hands it to the DragHandler holding the gesture, which sees a button
+		// it does not accept, deactivates and drops the grab. Dragging an overlay
+		// widget stopped moving it within a tick and the release fell through to
+		// the canvas underneath, which closes the overlay. Nothing needs
+		// synthesising during a drag anyway -- the press already made this window
+		// the event target, so the real moves arrive on their own.
+		//
+		// Asked of the window server, not of QGuiApplication::mouseButtons().
+		// That only knows about presses Qt itself processed, and this is a
+		// background accessory whose panels sit under other applications' windows
+		// -- a press Qt never saw still holds the button down, and the guard read
+		// clear right through the drag it was meant to protect.
+		if (anyMouseButtonHeld()) return;
+
+		// Nor is a screenshot. The crosshair is meant to freeze the screen under it,
+		// but this poller reads the cursor rather than being handed events, so the
+		// bar and dock kept opening their dropdowns under it and the shot caught them.
+		// This also drives the panels' native hit-testing, which has to go with it --
+		// the tracking areas deliver real pointer movement straight past this poller.
+		if (syncCaptureInertness()) return;
+
 		auto pointer = QCursor::pos();
 		for (auto* panel: pointerTrackedPanels()) {
 			panel->updatePointerInside(pointer);
@@ -173,20 +196,50 @@ void ensurePointerPoller() {
 
 } // namespace
 
-void CocoaPanelWindow::updatePointerInside(const QPoint& pointer) {
+void CocoaPanelWindow::updatePointerInside(const QPoint& rawPointer) {
 	if (this->window == nullptr || !this->window->isVisible()) {
 		this->mPointerInside = false;
 		return;
 	}
 
+	// QCursor::pos() is rounded, and the bottom row of a screen can round to one
+	// past the last pixel a bottom-anchored panel covers. Shoving the mouse hard
+	// into the bottom edge -- exactly how you open an auto-hiding dock -- then
+	// read as *outside* the dock, so it refused to open at the one position the
+	// gesture always ends at, while a few pixels higher worked fine. A position
+	// at most a pixel outside the screen is that rounding, not a real place the
+	// pointer can be; pull it back on.
+	auto pointer = rawPointer;
+	if (auto* pointerScreen = this->window->screen()) {
+		auto rect = pointerScreen->geometry();
+		if (rect.adjusted(-1, -1, 1, 1).contains(pointer)) {
+			pointer.setX(qBound(rect.left(), pointer.x(), rect.right()));
+			pointer.setY(qBound(rect.top(), pointer.y(), rect.bottom()));
+		}
+	}
+
 	auto inside = this->window->geometry().contains(pointer);
-	if (inside == this->mPointerInside) return;
+	auto left = this->mPointerInside && !inside;
 	this->mPointerInside = inside;
 
-	if (!inside) {
+	if (left) {
+		// Forget where the pointer was, or coming back to the exact pixel it left
+		// from matches the unchanged-position check below and posts no move --
+		// leaving Qt with a Leave and nothing to undo it.
+		this->mLastPointer = QPoint(-1, -1);
 		QCoreApplication::postEvent(this->window, new QEvent(QEvent::Leave));
 		return;
 	}
+
+	// Not `if (inside != wasInside)`: the moves have to keep coming for as long
+	// as the pointer is inside, not just on the tick it crosses the edge. Qt
+	// picks the hovered item out of the position each move carries, so a single
+	// move on entry hovers whatever was under the pointer at that instant and
+	// then nothing ever moves the hover again -- the dock would open the preview
+	// for the icon you landed on and refuse to switch to its neighbours until
+	// you left the dock entirely and came back. The unchanged-position check
+	// below is what keeps this idle when the pointer is still.
+	if (!inside) return;
 
 	// Entering has to be synthesised too. AppKit only routes pointer events to
 	// the application it considers frontmost, and a shell is an accessory that
@@ -238,6 +291,8 @@ void CocoaPanelWindow::setVisibleDirect(bool visible) {
 		this->mAnimationTimer.stop();
 		this->mClosing = false;
 
+		if (!visible && this->bFocusable.value()) unfocusPanel();
+
 		this->ProxyWindowBase::setVisibleDirect(visible);
 
 		if (visible && this->window != nullptr && this->window->handle() != nullptr) {
@@ -245,6 +300,7 @@ void CocoaPanelWindow::setVisibleDirect(bool visible) {
 			// the opacity back when no open animation runs.
 			settlePanel(this->window->winId());
 			this->updateDimensions();
+			if (this->bFocusable.value()) focusPanel(this->window->winId());
 		}
 
 		return;
@@ -274,6 +330,8 @@ void CocoaPanelWindow::setVisibleDirect(bool visible) {
 
 		animatePanel(this->window->winId(), animation, true, ANIMATION_OPEN_MS);
 		this->mAnimationTimer.start(ANIMATION_OPEN_MS);
+
+		if (this->bFocusable.value()) focusPanel(this->window->winId());
 	} else {
 		// Panels are hidden by a property binding, which can settle on false more
 		// than once. Only the first hide starts the animation; the rest would cut
@@ -289,6 +347,7 @@ void CocoaPanelWindow::setVisibleDirect(bool visible) {
 		}
 
 		this->mClosing = true;
+		if (this->bFocusable.value()) unfocusPanel();
 		animatePanel(this->window->winId(), animation, false, ANIMATION_CLOSE_MS);
 		this->mAnimationTimer.start(ANIMATION_CLOSE_MS);
 	}
@@ -377,6 +436,18 @@ void CocoaPanelWindow::updateFocusable() {
 
 	// setWindowFlags resets the native level and collection behavior.
 	this->updateNativeState();
+
+	// Focus follows focusable, not visibility alone. A panel usually binds
+	// visible and keyboardFocus to the same state, and QML settles the two in
+	// either order: if visible won the race, setVisibleDirect saw a panel that
+	// was not focusable yet and never took focus, and on the way out it saw one
+	// that had already stopped being focusable and never handed focus back --
+	// closing the overlay left the keyboard pointed at the shell. Both calls are
+	// idempotent, so the path that already ran costs nothing.
+	if (this->window->handle() == nullptr || !this->isVisibleDirect()) return;
+
+	if (this->bFocusable.value()) focusPanel(this->window->winId());
+	else unfocusPanel();
 }
 
 void CocoaPanelWindow::trySetWidth(qint32 implicitWidth) {
