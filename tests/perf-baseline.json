@@ -1,0 +1,12 @@
+{
+  "_comment": "Idle live shell (end-4 config), measured with bin/qs-perf 60 during the perf audit, before any PF-* package. Re-measure with bin/qs-perf and compare against these ranges; a lane's PR quotes its own before/after from tests/perf-history.jsonl.",
+  "self_cpu_pct": [6, 9],
+  "children_cpu_pct": [26, 46],
+  "spawns_per_s": [12, 15],
+  "wakeups_per_s": [94, 101],
+  "footprint_mb": [964, 1022],
+  "iosurface_mb": 233,
+  "ioaccel_mb": 361,
+  "orphan_adapters": 16,
+  "dead_instance_dirs": 577
+}
