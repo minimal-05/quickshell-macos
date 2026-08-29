@@ -23,6 +23,7 @@
 /bin/quickshell
 /bin/menus
 /helpers/menus/bin/
+/bin/qs-sysstats.bin
 /bin/__pycache__
 /shell
 /proof-*.png

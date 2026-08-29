@@ -33,7 +33,9 @@ from the executable's real path, so nothing may stand between the process and
 ## Not committed, but on disk
 
 `Quickshell.app/` (generated in full by `bin/qs-bundle`), `bin/quickshell` (now
-a wrapper onto the bundle), `bin/menus` (built from `helpers/menus`) and
+a wrapper onto the bundle), `bin/menus` (built from `helpers/menus`),
+`bin/qs-sysstats.bin` (the compiled `src/tools/qs-sysstats.c` helper;
+`bin/qs-sysstats` falls back to the python version when it is missing) and
 `build/`. All gitignored on purpose; don't "fix" them by adding them.
 
 `bin/qs` is the opposite: it used to be generated and gitignored, which left the
