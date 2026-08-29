@@ -51,7 +51,10 @@ check "qs --tools == src/tools"           "$expected" "$listed"
 check "same list through the Mach-O"      "$listed" "$("$EXE" --tools)"
 check "every tool has bin/<tool> -> qs"   "" "$(for t in $listed; do [ -L "$ROOT/bin/$t" ] || echo "$t"; done | tr '\n' ' ')"
 check "every symlink is a tool"           "" "$(for l in "$ROOT/bin"/*; do [ -L "$l" ] && [ ! -x "$TOOLS/$(basename "$l")" ] && basename "$l"; done | tr '\n' ' ')"
-check "warp.py rides along, not a tool"   "support" "$([ -f "$TOOLS/warp.py" ] && [ ! -x "$TOOLS/warp.py" ] && echo support)"
+# warp.py is a tool since the Hyprland shim runs it by bare name
+# (hl.dsp.cursor.move -> ["warp.py", x, y]): executable, with a shebang, so
+# bin/warp.py -> qs -> tools/warp.py works without naming an interpreter.
+check "warp.py is a tool with a shebang"   "tool" "$([ -x "$TOOLS/warp.py" ] && [ "$(head -c2 "$TOOLS/warp.py")" = "#!" ] && echo tool)"
 
 echo "dispatch"
 wrong=""

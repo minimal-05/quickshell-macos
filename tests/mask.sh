@@ -26,7 +26,9 @@ stop() { kill "$PID" 2>/dev/null; }
 trap stop EXIT
 
 ask() { "$BINARY" -p "$QML" ipc call probe "$@" 2>/dev/null | tr -d '\r\n'; }
-move() { /usr/bin/python3 "$WARP" "$1" "$2" >/dev/null 2>&1; sleep 0.4; }
+# bin/warp.py is a symlink onto qs (the tool is executable, with a shebang),
+# so it is run, not handed to an interpreter.
+move() { "$WARP" "$1" "$2" >/dev/null 2>&1; sleep 0.4; }
 
 # The panel's on-screen windows as the window server sees them: "x,y,w,h,alpha"
 # per window owned by the probe, largest first.

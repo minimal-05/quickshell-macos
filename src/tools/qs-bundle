@@ -17,9 +17,10 @@
 # Why the tools live inside it: the Mach-O finds Contents/Resources/tools from
 # its own path and runs whichever one it was started as (src/launch/tools.cpp),
 # so one binary is the shell, the Linux-command stand-ins and the helpers.
-# Directory-driven: every executable in src/tools/ is copied, every
-# src/tools/*.c is compiled (an optional first line `// cc: <flags>` supplies
-# its flags), anything else there (warp.py) rides along as a support file.
+# Directory-driven: every executable in src/tools/ is copied (warp.py
+# included: the Hyprland shim runs it by bare name), every src/tools/*.c is
+# compiled (an optional first line `// cc: <flags>` supplies its flags),
+# anything else there rides along as a support file.
 # ponytail: scripts are exec'd from Resources; embedding them as Qt resources
 # is the upgrade path.
 #

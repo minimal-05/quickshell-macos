@@ -59,6 +59,10 @@ if [ -d "$CFG/services" ] && [ -x "$QS" ]; then
     # Watch the window in which two samples land (default updateInterval 3000 ms)
     # with qs-perf: reaped-child CPU is the kernel's own count of what the
     # service spawned, so a `top` that lives 100 ms cannot slip between samples.
+    # After a short settle: the config's own startup (Directories' mkdirs,
+    # SystemInfo's sysctl/whoami) is a burst of one-shot children in the first
+    # second, and the figure asserted here is the service's steady state.
+    sleep 2
     perf="$("$ROOT/bin/qs-perf" "$pid" 7)"
     out="$("$QS" -p "$PROBE" ipc call probe check 2>&1 | tr -d '\r')"
     [ "$out" = "ok" ] && ok "ResourceUsage probe: $out" || bad "ResourceUsage probe: $out"
