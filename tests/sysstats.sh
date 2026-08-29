@@ -1,27 +1,27 @@
 #!/bin/bash
-# qs-sysstats: the helper emits the fields ResourceUsage.qml needs, CPU ticks
-# are cumulative (monotonic across runs), and the python fallback agrees with
-# the compiled binary. Then the service itself: _probe_resourceusage.qml runs
+# qs-sysstats: the helper (src/tools/qs-sysstats.c, compiled into the bundle
+# by qs-bundle) emits the fields ResourceUsage.qml needs, CPU ticks are
+# cumulative (monotonic across runs), and the bin/qs-sysstats symlink reaches
+# the same tool. Then the service itself: _probe_resourceusage.qml runs
 # against a scratch view of the shell config (QS_CONFIG_ROOT, default
 # ~/.config/quickshell -- never written to) in a throwaway instance, and must
 # turn two samples into a real CPU% without spawning `top`.
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-BIN="$ROOT/bin/qs-sysstats.bin"
-PY="$ROOT/src/tools/qs-sysstats.py"
+BIN="$ROOT/Quickshell.app/Contents/MacOS/../Resources/tools/qs-sysstats"
 fail=0
 ok()   { printf '  PASS  %s\n' "$1"; }
 bad()  { printf '  FAIL  %s\n' "$1"; fail=1; }
 
-[ -x "$BIN" ] || cc -O2 -Wall -o "$BIN" "$ROOT/src/tools/qs-sysstats.c" || { bad "compile"; exit 1; }
+[ -x "$BIN" ] || { bad "no $BIN (run bin/qs-build)"; exit 1; }
 
-a="$("$BIN")"; sleep 0.3; b="$("$BIN")"; c="$(/usr/bin/python3 "$PY")"; d="$("$ROOT/bin/qs-sysstats")"
-/usr/bin/python3 - "$a" "$b" "$c" "$d" <<'PY' || fail=1
+a="$("$BIN")"; sleep 0.3; b="$("$BIN")"; d="$("$ROOT/bin/qs-sysstats")"
+/usr/bin/python3 - "$a" "$b" "$d" <<'PY' || fail=1
 import json, sys
-a, b, c, d = (json.loads(x) for x in sys.argv[1:5])
+a, b, d = (json.loads(x) for x in sys.argv[1:4])
 def ok(m): print(f"  PASS  {m}")
 def bad(m): print(f"  FAIL  {m}"); sys.exit(1)
-for name, s in (("binary", a), ("python fallback", c), ("bin/qs-sysstats", d)):
+for name, s in (("tool", a), ("bin/qs-sysstats", d)):
     for k in ("cpu", "mem", "swap", "load"):
         k in s or bad(f"{name}: missing {k}")
     for k in ("user", "system", "idle", "nice"):
@@ -31,14 +31,12 @@ for name, s in (("binary", a), ("python fallback", c), ("bin/qs-sysstats", d)):
     for k in ("total", "used", "free"):
         k in s["swap"] or bad(f"{name}: missing swap.{k}")
     len(s["load"]) == 3 or bad(f"{name}: load has {len(s['load'])} entries")
-ok("all fields present in binary, fallback and dispatcher")
+ok("all fields present in the tool and through bin/qs-sysstats")
 tot = lambda s: sum(s["cpu"].values())
 tot(b) > tot(a) and b["cpu"]["idle"] >= a["cpu"]["idle"] or bad("cpu ticks not cumulative")
 ok(f"cpu ticks cumulative: total {tot(a)} -> {tot(b)}")
-a["mem"]["total"] == c["mem"]["total"] and a["mem"]["pagesize"] == c["mem"]["pagesize"] or bad("fallback memsize/pagesize differ")
-abs(a["mem"]["used"] - c["mem"]["used"]) < 512 * 2**20 or bad(f"fallback used differs: {a['mem']['used']} vs {c['mem']['used']}")
-a["swap"]["total"] == c["swap"]["total"] or bad("fallback swap differs")
-ok("python fallback agrees with the binary")
+a["mem"]["total"] == d["mem"]["total"] and a["mem"]["pagesize"] == d["mem"]["pagesize"] or bad("symlink route memsize/pagesize differ")
+ok("bin/qs-sysstats reaches the same tool")
 0 < a["mem"]["used"] < a["mem"]["total"] and a["mem"]["used"] + a["mem"]["available"] == a["mem"]["total"] or bad("mem used/available inconsistent")
 ok("mem used + available == total")
 PY

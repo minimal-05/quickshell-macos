@@ -7,7 +7,8 @@ must be C++ and what can be QML, and what is already done.
 ## Build it
 
 ```sh
-bin/qs-build            # clone upstream, apply the patch, build, install, sign
+bin/qs qs-build         # fresh checkout: build, install into Quickshell.app, sign
+bin/qs-build            # afterwards, the same through its symlink
 bin/qs-build --clean    # from scratch
 ```
 
@@ -28,12 +29,22 @@ Apple** and `COCOA` defaults on, so a first configure on a Mac just works.
 
 The built binary is installed as `Quickshell.app/Contents/MacOS/quickshell`
 (`Info.plist` comes from `assets/Quickshell.plist`), and `bin/qs` — the one
-command — execs that real path. `bin/quickshell` is a two-line exec wrapper
-onto it for the paths that still know that name — not a symlink, because
-`NSBundle.mainBundle` resolves the bundle from the executable's real path and a
-symlink outside the bundle leaves the process with no bundle at all. Both the
-bundle and the wrapper are generated and gitignored. See "TCC identity" below
-for why, and `tests/bundle.sh` for the check.
+command — execs that real path under whatever name it was called by. It is a
+script, not a symlink, because `NSBundle.mainBundle` resolves the bundle from
+the executable's real path and a symlink outside the bundle leaves the process
+with no bundle at all. See "TCC identity" below for why, and `tests/bundle.sh`
+for the check.
+
+The same Mach-O is every tool. `src/launch/tools.cpp` runs before Qt: it sets
+`PATH` (the bundle's `Contents/Resources/tools` first, then `bin/`),
+`XDG_RUNTIME_DIR` and `QML2_IMPORT_PATH`, then execs
+`Contents/Resources/tools/<name>` when `argv[0]` or `argv[1]` names one, and
+lists them for `qs --tools`. `qs-bundle` fills that directory from
+`src/tools/` — scripts copied, `*.c` compiled (a first line `// cc: <flags>`
+supplies link flags) — and writes `bin/<tool> -> qs` for each, so PATH needs
+one entry and skhd, karabiner and launchd keep their absolute paths. The
+layout is directory-driven: a new tool is a new file in `src/tools/`.
+`tests/one-binary.sh` checks all of it.
 
 ## The seam
 
@@ -176,11 +187,15 @@ cross-platform Quickshell.
 ## Gotchas
 
 - **Re-sign after copying the binary** (see above). This one wastes hours.
-- The launchers put `bin/` first on `PATH`. It holds `notify-send`, `xdg-open`,
-  `pidof` and `qs` stand-ins that configs shell out to by bare name. Nothing is
-  installed system-wide.
-- All launchers share `XDG_RUNTIME_DIR=/tmp/quickshell-$UID`. If you start a
-  shell with a different one, `qs ipc` cannot reach it.
+- The binary puts `Quickshell.app/Contents/Resources/tools` first on `PATH`,
+  then `bin/`. That is where `notify-send`, `xdg-open`, `pidof`, `hyprctl` and
+  the rest come from when a config shells out to them by bare name, and where
+  `qs` itself comes from. Nothing is installed system-wide.
+- The binary defaults `XDG_RUNTIME_DIR=/tmp/quickshell-$UID` for itself and
+  every tool. If you start a shell with a different one, `qs ipc` cannot reach
+  it.
+- Tools run from inside the bundle: an edit under `src/tools/` is live after
+  `qs-dev --no-build` or `qs-bundle`, not before.
 - `~/.config/quickshell/` carries `// macos: ` markers where a line was disabled.
   Grep for that exact marker — two `WlrLayershell` lines were already commented
   out upstream and must stay that way.
@@ -198,10 +213,10 @@ all broke after the next `qs-build`. Inside a bundle signed with a certificate
 the requirement is "bundle id `org.quickshell.shell`, signed by this
 certificate", which a rebuild does not change.
 
-`bin/qs-bundle` (called by `qs-build` and `qs-dev`) builds the bundle, signs it
-with `$QS_CODESIGN_IDENTITY` or ad-hoc when that is unset, and rewrites
-`bin/quickshell` as the wrapper. Ad-hoc signing works today but keeps the
-per-build identity. Two one-time steps make it stable — these need the user's
+`qs-bundle` (called by `qs-build` and `qs-dev`) builds the bundle, installs
+the tools into it, signs it with `$QS_CODESIGN_IDENTITY` or ad-hoc when that
+is unset, and regenerates `bin/`'s symlinks. Ad-hoc signing works today but
+keeps the per-build identity. Two one-time steps make it stable — these need the user's
 keychain and the System Settings UI, so nothing here does them for you.
 
 ### 1. Create the "Quickshell Dev" code-signing certificate (once)
