@@ -4,8 +4,8 @@ pragma Singleton
 //
 // REAL: enum values copied verbatim from
 // quickshell/src/services/upower/device.hpp (UPowerDeviceType::Enum).
-// Only Battery is ever produced by this shim (macOS exposes no per-peripheral
-// power devices through pmset); the rest exist so that comparisons and
+// Only Battery is ever produced by this shim (see UPower.qml on peripherals);
+// the rest exist so that comparisons and
 // toString() calls in consumer configs resolve.
 
 import QtQuick
