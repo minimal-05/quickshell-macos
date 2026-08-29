@@ -5,6 +5,7 @@ qt_add_library(quickshell-cocoa STATIC
 	appicon.mm
 	focusgrab.mm
 	panel_window.cpp
+	sysstats.mm # round2/native-stats-power
 )
 
 qt_add_qml_module(quickshell-cocoa
@@ -25,3 +26,4 @@ target_link_libraries(quickshell PRIVATE quickshell-cocoaplugin quickshell-cocoa
 
 # Quickshell.Wayland compatibility module (WlrLayershell attached type + friends).
 add_subdirectory(wayland)
+
