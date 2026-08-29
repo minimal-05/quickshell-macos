@@ -1,0 +1,4 @@
+#!/bin/bash
+# reboot(8) stand-in: System Events restart, via bin/loginctl.
+dry=(); [ "${1:-}" = "--dry-run" ] && { dry=(--dry-run); shift; }
+exec "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/loginctl" "${dry[@]}" reboot "$@"

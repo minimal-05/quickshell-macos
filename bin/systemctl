@@ -1,0 +1,3 @@
+#!/bin/bash
+# systemctl(1) stand-in: the same session verbs as bin/loginctl (see there).
+exec "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/loginctl" "$@"

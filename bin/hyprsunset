@@ -1,0 +1,233 @@
+#!/usr/bin/env python3
+"""hyprsunset(1) stand-in for the macOS port.
+
+  hyprsunset                      run the gamma daemon (exits 0 at once if one is up)
+  hyprsunset --gamma [25-100]     set screen gamma (no value: print the current one)
+  hyprsunset --temperature [K]    Night Shift via `nightlight` (no value: print K)
+  hyprsunset --identity           reset gamma to 100 and turn Night Shift off
+  hyprsunset --help
+
+Colour temperature goes through Apple's own Night Shift (`brew install
+nightlight`, a CBBlueLightClient wrapper): 6000 K and above means off, which is
+what Hyprsunset.qml treats as "not active". nightlight takes 3500-6000 K
+(its percent runs 0 at 3500 K to 100 at 6000 K), so warmer requests clamp to
+3500 K.
+
+Gamma is a CGSetDisplayTransferByFormula ramp. macOS keeps a transfer table
+only for as long as the process that set it lives, and drops it again when a
+display sleeps or is reconfigured, so gamma has to be owned by a long-lived
+daemon that re-applies it. This is that daemon; `hyprctl hyprsunset gamma N`
+talks to it over a unix socket. Night Shift is set by system prefs, not by the
+daemon, so it needs no re-apply.
+"""
+import ctypes
+import os
+import socket
+import subprocess
+import sys
+import time
+
+RUNTIME = os.environ.get("XDG_RUNTIME_DIR") or f"/tmp/quickshell-{os.getuid()}"
+SOCK = os.environ.get("HYPRSUNSET_SOCK") or os.path.join(RUNTIME, "hyprsunset.sock")
+LOG = os.environ.get("HYPRSUNSET_LOG") or os.path.join(RUNTIME, "hyprsunset.log")
+REAPPLY_S = 20  # display sleep/reconfigure wipes the table; a cheap re-set every 20 s covers it
+KMIN, KMAX, KOFF = 3500, 6000, 6000
+
+cg = ctypes.CDLL("/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics")
+cg.CGGetOnlineDisplayList.argtypes = [ctypes.c_uint32, ctypes.POINTER(ctypes.c_uint32), ctypes.POINTER(ctypes.c_uint32)]
+cg.CGSetDisplayTransferByFormula.argtypes = [ctypes.c_uint32] + [ctypes.c_float] * 9
+cg.CGDisplayRestoreColorSyncSettings.argtypes = []
+
+
+def log(msg):
+    line = f"{time.strftime('%H:%M:%S')} hyprsunset: {msg}\n"
+    sys.stderr.write(line)
+    try:
+        with open(LOG, "a") as f:
+            f.write(line)
+    except OSError:
+        pass
+
+
+def apply_gamma(pct):
+    if pct >= 100:
+        cg.CGDisplayRestoreColorSyncSettings()
+        return
+    ids = (ctypes.c_uint32 * 16)()
+    n = ctypes.c_uint32(0)
+    cg.CGGetOnlineDisplayList(16, ids, ctypes.byref(n))
+    top = pct / 100.0
+    for i in range(n.value):
+        cg.CGSetDisplayTransferByFormula(ids[i], 0.0, top, 1.0, 0.0, top, 1.0, 0.0, top, 1.0)
+
+
+def nightlight(*args):
+    try:
+        r = subprocess.run(["nightlight", *args], capture_output=True, text=True)
+    except FileNotFoundError:
+        sys.stderr.write("hyprsunset: `nightlight` not installed (brew install nightlight); temperature is unavailable\n")
+        return None
+    return r.stdout.strip()
+
+
+def temperature(val):
+    if val is None:
+        status = nightlight("status") or ""
+        if not status.startswith("on"):
+            print(KOFF)
+            return 0
+        pct = nightlight("temp") or "0"
+        try:
+            pct = float(pct)
+        except ValueError:
+            pct = 0
+        # nightlight's percent is linear: 0 % = 3500 K, 100 % = 6000 K.
+        print(int(round(KMIN + pct * (KMAX - KMIN) / 100)))
+        return 0
+    try:
+        k = int(float(val))
+    except ValueError:
+        sys.stderr.write(f"hyprsunset: bad temperature {val!r}\n")
+        return 2
+    if k >= KOFF:
+        nightlight("off")
+        log(f"temperature {k} -> Night Shift off")
+    else:
+        k = max(KMIN, min(KMAX - 1, k))
+        nightlight("temp", f"{k}K")
+        nightlight("on")
+        log(f"temperature {k} -> Night Shift on at {k}K")
+    return 0
+
+
+def send(msg):
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.settimeout(3)
+    s.connect(SOCK)
+    s.sendall((msg + "\n").encode())
+    reply = s.recv(256).decode().strip()
+    s.close()
+    return reply
+
+
+def ensure_daemon():
+    try:
+        return send("ping") == "pong"
+    except OSError:
+        pass
+    subprocess.Popen([sys.executable, os.path.abspath(__file__)], stdin=subprocess.DEVNULL,
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    for _ in range(40):
+        time.sleep(0.05)
+        try:
+            if send("ping") == "pong":
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def gamma(val):
+    if not ensure_daemon():
+        sys.stderr.write("hyprsunset: gamma daemon did not start\n")
+        return 1
+    if val is None:
+        print(send("get"))
+        return 0
+    try:
+        pct = max(25, min(100, int(float(val))))
+    except ValueError:
+        sys.stderr.write(f"hyprsunset: bad gamma {val!r}\n")
+        return 2
+    print(send(f"gamma {pct}"))
+    return 0
+
+
+def daemon():
+    os.makedirs(RUNTIME, exist_ok=True)
+    try:
+        if send("ping") == "pong":
+            return 0  # `pidof hyprsunset || hyprsunset` races with itself; one is enough
+    except OSError:
+        pass
+    try:
+        os.unlink(SOCK)
+    except FileNotFoundError:
+        pass
+    srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    srv.bind(SOCK)
+    srv.listen(4)
+    current = 100
+    log(f"daemon up on {SOCK} (pid {os.getpid()})")
+    while True:
+        srv.settimeout(REAPPLY_S if current < 100 else None)
+        try:
+            conn, _ = srv.accept()
+        except socket.timeout:
+            apply_gamma(current)
+            continue
+        try:
+            msg = conn.recv(256).decode().strip()
+            if msg == "ping":
+                conn.sendall(b"pong\n")
+            elif msg == "get":
+                conn.sendall(f"{current}\n".encode())
+            elif msg.startswith("gamma "):
+                current = max(25, min(100, int(float(msg.split()[1]))))
+                apply_gamma(current)
+                log(f"gamma {current}")
+                conn.sendall(b"ok\n")
+            elif msg == "identity":
+                current = 100
+                apply_gamma(100)
+                log("identity")
+                conn.sendall(b"ok\n")
+            elif msg == "quit":
+                conn.sendall(b"ok\n")
+                conn.close()
+                break
+            else:
+                conn.sendall(b"unknown\n")
+        except (ValueError, OSError):
+            pass
+        finally:
+            conn.close()
+    srv.close()
+    os.unlink(SOCK)
+    apply_gamma(100)
+    log("daemon exit")
+    return 0
+
+
+def main(argv):
+    if not argv:
+        return daemon()
+    a = argv[0]
+    val = argv[1] if len(argv) > 1 else None
+    if a in ("-h", "--help"):
+        print(__doc__.strip())
+        return 0
+    if a == "--temperature":
+        return temperature(val)
+    if a == "--gamma":
+        return gamma(val)
+    if a == "--identity":
+        try:
+            send("identity")
+        except OSError:
+            apply_gamma(100)
+        nightlight("off")
+        print("identity")
+        return 0
+    if a == "--quit":
+        try:
+            print(send("quit"))
+        except OSError:
+            print("not running")
+        return 0
+    sys.stderr.write(f"hyprsunset: unknown option {a}\n{__doc__.strip()}\n")
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]) or 0)
