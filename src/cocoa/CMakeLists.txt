@@ -8,6 +8,8 @@ qt_add_library(quickshell-cocoa STATIC
 	sysstats.mm # round2/native-stats-power
 	power.mm # round2/native-stats-power
 	coreaudio.mm # round2/native-audio
+	hotkeys.mm # round2/native-input
+	clipboard.mm # round2/native-input
 )
 
 qt_add_qml_module(quickshell-cocoa
@@ -33,3 +35,12 @@ add_subdirectory(wayland)
 
 # IOKit for the power sources and the AppleSmartBattery registry node (power.mm).
 target_link_libraries(quickshell-cocoa PRIVATE "-framework IOKit") # round2/native-stats-power
+# round2/native-input: GlobalShortcut chords via Carbon RegisterEventHotKey, and
+# the default chord table compiled in from shortcuts.json so a fresh checkout
+# has working hotkeys before qs-install-keybinds copies that file to ~/.config.
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/shortcuts.json" QS_COCOA_SHORTCUTS_JSON)
+file(CONFIGURE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/shortcuts_json.hpp"
+	CONTENT "static const char* const DEFAULT_SHORTCUTS_JSON = R\"qsjson(@QS_COCOA_SHORTCUTS_JSON@)qsjson\";\n")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS shortcuts.json)
+target_include_directories(quickshell-cocoa PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
+target_link_libraries(quickshell-cocoa PRIVATE "-framework Carbon")

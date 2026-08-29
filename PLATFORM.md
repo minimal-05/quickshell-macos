@@ -131,7 +131,17 @@ Take `src/cocoa/wayland/` as the worked example.
 
 `Quickshell` core · `Quickshell.Io` · `Quickshell.Widgets` · `PanelWindow`,
 `FloatingWindow`, `PopupWindow` · `Quickshell.Wayland` (`WlrLayershell` attached
-type driving NSWindow level; `ToplevelManager`/`Toplevel` over yabai)
+type driving NSWindow level; `ToplevelManager`/`Toplevel` over yabai) ·
+`Quickshell.Cocoa.Hotkeys` behind the `GlobalShortcut` shim (Carbon
+`RegisterEventHotKey`; chord table `src/cocoa/shortcuts.json` overlaid by
+`~/.config/quickshell-macos/shortcuts.json`, any chord skhdrc binds is left to
+skhd; a bare-modifier hold like end-4's SUPER for `workspaceNumber` is not a
+hot key and stays IPC-only until a CGEvent tap under Input Monitoring exists) ·
+pasteboard watch (`src/cocoa/clipboard.mm`: `Quickshell.clipboardTextChanged`
+fires for copies made in other apps, which Qt alone only notices on app
+activation, and every copy lands in the history `bin/cliphist` serves from
+`~/Library/Application Support/quickshell/cliphist`; `bin/wl-copy`/`bin/wl-paste`
+wrap `pbcopy`/`pbpaste`)
 
 **Shims (loose QML — should migrate into the binary)**
 
@@ -153,8 +163,7 @@ greetd · polkit
 
 ## Roadmap, by value over effort
 
-**Small.** `GlobalShortcut` via Carbon `RegisterEventHotKey` (removes the skhd
-dependency entirely) · `IdleMonitor` via `CGEventSourceSecondsSinceLastEventType`
+**Small.** `IdleMonitor` via `CGEventSourceSecondsSinceLastEventType`
 and `IdleInhibitor` via `IOPMAssertionCreateWithName` (both currently fork a
 subprocess every second) · `UPower` via `IOPSCopyPowerSourcesInfo` +
 `IOPSNotificationCreateRunLoopSource` · `Pipewire` default device via CoreAudio
@@ -201,6 +210,12 @@ cross-platform Quickshell.
   out upstream and must stay that way.
 - `Quickshell.WindowManager` compiles on macOS but only speaks ext-workspace-v1,
   so it is present and permanently empty rather than absent.
+- Hot keys and skhd must not share a chord: skhd's event tap swallows the key
+  before the hot key sees it, and a stale `qs-ipc ... toggle` line would fire an
+  action a second time. `Hotkeys` therefore skips any chord skhdrc binds (logged
+  at startup), and `qs-install-keybinds` leaves skhd only the settings window.
+  Both files are read once per shell start. Synthetic key events reach hot keys
+  for letter keys, not for F17-F19 (`tests/hotkeys.sh` relies on that).
 
 ## TCC identity
 
