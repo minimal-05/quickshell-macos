@@ -180,13 +180,27 @@ void CocoaPanelWindow::updatePointerInside(const QPoint& pointer) {
 	}
 
 	auto inside = this->window->geometry().contains(pointer);
-	if (inside == this->mPointerInside) return;
+	auto left = this->mPointerInside && !inside;
 	this->mPointerInside = inside;
 
-	if (!inside) {
+	if (left) {
+		// Forget where the pointer was, or coming back to the exact pixel it left
+		// from matches the unchanged-position check below and posts no move --
+		// leaving Qt with a Leave and nothing to undo it.
+		this->mLastPointer = QPoint(-1, -1);
 		QCoreApplication::postEvent(this->window, new QEvent(QEvent::Leave));
 		return;
 	}
+
+	// Not `if (inside != wasInside)`: the moves have to keep coming for as long
+	// as the pointer is inside, not just on the tick it crosses the edge. Qt
+	// picks the hovered item out of the position each move carries, so a single
+	// move on entry hovers whatever was under the pointer at that instant and
+	// then nothing ever moves the hover again -- the dock would open the preview
+	// for the icon you landed on and refuse to switch to its neighbours until
+	// you left the dock entirely and came back. The unchanged-position check
+	// below is what keeps this idle when the pointer is still.
+	if (!inside) return;
 
 	// Entering has to be synthesised too. AppKit only routes pointer events to
 	// the application it considers frontmost, and a shell is an accessory that
