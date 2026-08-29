@@ -36,4 +36,9 @@ cp "$BUILD/src/quickshell" "$ROOT/bin/quickshell"
 # kills it on exec with no output at all. Re-sign every time.
 codesign -f -s - "$ROOT/bin/quickshell"
 
+# Standalone helper for services/ResourceUsage.qml (see src/tools/qs-sysstats.c).
+# It stays outside the CMake tree so it builds in a second without Qt.
+echo "==> building $ROOT/bin/qs-sysstats.bin"
+cc -O2 -Wall -o "$ROOT/bin/qs-sysstats.bin" "$ROOT/src/tools/qs-sysstats.c"
+
 "$ROOT/bin/quickshell" --version

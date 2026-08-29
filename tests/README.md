@@ -32,6 +32,7 @@ distinct instance), and the harness kills only the pid it started.
 | `hoverprobe.qml` | a PanelWindow's MouseArea sees the pointer enter/leave | `bin/qs-test tests/hoverprobe.qml -- probe hover outside`, or `bin/qs-probe` for the full table |
 | `hoverprobe-focusable.qml` | same, for a focusable panel | `QS_PROBE_QML=tests/hoverprobe-focusable.qml bin/qs-probe` |
 | `reap.sh` | `qs-reap` removes exactly dead dirs and orphan adapters, in a private runtime dir | `bash tests/reap.sh` |
+| `sysstats.sh` + `_probe_resourceusage.qml` | `bin/qs-sysstats` emits the CPU-tick/memory/swap JSON `services/ResourceUsage.qml` diffs (binary and python fallback agree, ticks are cumulative), and the service turns two samples into a CPU% with no `top` child | `bash tests/sysstats.sh` (`QS_CONFIG_ROOT`, `QS_BINARY` to point at a config checkout / built binary) |
 
 Add a `_probe_<name>.qml` (with `IpcHandler` functions returning strings) or
 a `tests/<name>.sh` for every non-trivial branch of logic; the verifier runs

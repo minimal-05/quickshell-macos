@@ -15,7 +15,9 @@ commits on top, not a patch.
 
 ## Not committed, but on disk
 
-`bin/quickshell` (built binary) and `build/`. Both gitignored on purpose; don't
+`bin/quickshell` (built binary), `bin/qs-sysstats.bin` (the compiled
+`src/tools/qs-sysstats.c` helper; `bin/qs-sysstats` falls back to the python
+version when it is missing) and `build/`. All gitignored on purpose; don't
 "fix" them by adding them.
 
 `examples/` used to hold end-4's config, untracked, with no history. On

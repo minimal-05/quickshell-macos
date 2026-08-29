@@ -16,6 +16,7 @@
 
 # macOS fork: build artifacts and third-party config
 /bin/quickshell
+/bin/qs-sysstats.bin
 /bin/qs
 /bin/__pycache__
 /shell
