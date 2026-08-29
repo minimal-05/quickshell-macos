@@ -22,9 +22,18 @@ Bluetooth, NetworkManager, jemalloc, the crash handler) now defaults **off on
 Apple** and `COCOA` defaults on, so a first configure on a Mac just works.
 
 > **Copying the binary breaks it.** A `cp` of a Mach-O file invalidates its
-> ad-hoc signature and the kernel then kills it on exec with *no output at all* —
+> signature and the kernel then kills it on exec with *no output at all* —
 > it looks like the binary silently does nothing. Always
-> `codesign -f -s - <binary>` after copying. `qs-build` does this for you.
+> `codesign -f -s - <binary>` after copying. `bin/qs-bundle` does this for you.
+
+The built binary is installed as `Quickshell.app/Contents/MacOS/quickshell`
+(`Info.plist` comes from `assets/Quickshell.plist`), and `bin/qs` — the one
+command — execs that real path. `bin/quickshell` is a two-line exec wrapper
+onto it for the paths that still know that name — not a symlink, because
+`NSBundle.mainBundle` resolves the bundle from the executable's real path and a
+symlink outside the bundle leaves the process with no bundle at all. Both the
+bundle and the wrapper are generated and gitignored. See "TCC identity" below
+for why, and `tests/bundle.sh` for the check.
 
 ## The seam
 
@@ -277,6 +286,6 @@ certificate in place nothing needs re-granting; after a rebuild *without* it
 (ad-hoc), every one of these has to be redone, which is why step 1 exists.
 
 Which program macOS holds responsible for a subprocess's request is inherited
-from the process that launched it, so launch the shell through `qs-start` /
-`qs-start` (which exec the bundle binary through `qs`) rather than from a
-terminal, whose own grants would otherwise be the ones consulted.
+from the process that launched it, so launch the shell through `qs-start` (which
+execs the bundle binary through `qs`) rather than from a terminal, whose own
+grants would otherwise be the ones consulted.
