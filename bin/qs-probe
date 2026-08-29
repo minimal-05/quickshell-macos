@@ -15,6 +15,10 @@
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export PATH="$ROOT/bin:/opt/homebrew/bin:$PATH"
+# `qs` sets these itself, but QS_BINARY may name the bare Mach-O, which needs
+# them from us: without XDG_RUNTIME_DIR every ipc call fails on /run/user.
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp/quickshell-$UID}"
+export QML2_IMPORT_PATH="$ROOT/shims${QML2_IMPORT_PATH:+:$QML2_IMPORT_PATH}"
 
 WARP="$ROOT/bin/warp.py"
 LOG=/tmp/qs-probe.log

@@ -43,7 +43,6 @@ fi
 
 # Previous instances leave orphan mediaremote-adapter.pl helpers and dead
 # runtime dirs behind (see qs-reap); a fresh start is the moment to clear them.
-# This used to live in qs-switch, which is gone.
 "$HERE/qs-reap" --quiet
 
 # Other applications' notifications reach the shell only through the bridge:
