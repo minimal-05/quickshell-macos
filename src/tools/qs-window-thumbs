@@ -6,7 +6,15 @@
 # does have one: it takes a CoreGraphics window id, which is exactly what yabai's
 # window id is. end-4 keys windows by a hex `address`, so that is the file name.
 #
-#   qs-window-thumbs          capture into $XDG_RUNTIME_DIR/quickshell/thumbs
+#   qs-window-thumbs          capture every window into
+#                             $XDG_RUNTIME_DIR/quickshell/thumbs, prune the dead
+#   qs-window-thumbs ID...    capture just these window ids, prune nothing
+#
+# One line per window is printed: "<changed> <path>", where <changed> is 1 if the
+# capture differs from what was already on disk and 0 if it is byte-identical.
+# ScreencopyView on macOS drives the second form, one window at a time, and binds
+# the path — skipping the reload when nothing changed, but only once it has a
+# frame to keep.
 #
 # Writes are atomic (capture to .tmp, then mv) so the overview never samples a
 # half-written file.
@@ -19,7 +27,15 @@ mkdir -p "$DIR"
 
 MAX_PX="${QS_THUMB_PX:-640}"
 
-ids="$(yabai -m query --windows 2>/dev/null | jq -r '.[] | select(."is-minimized" == false) | .id')"
+# Explicit ids skip the prune: previews are captured one window at a time, and a
+# prune driven by a single id would delete every other window's thumbnail.
+if [ "$#" -gt 0 ]; then
+    ids="$*"
+    prune=0
+else
+    ids="$(yabai -m query --windows 2>/dev/null | jq -r '.[] | select(."is-minimized" == false) | .id')"
+    prune=1
+fi
 [ -n "$ids" ] || exit 0
 
 live=""
@@ -30,8 +46,22 @@ for id in $ids; do
     screencapture -x -o -l"$id" "$tmp" 2>/dev/null || { rm -f "$tmp"; continue; }
     [ -s "$tmp" ] || { rm -f "$tmp"; continue; }
     sips -Z "$MAX_PX" "$tmp" >/dev/null 2>&1
+
+    # A window whose content has not changed re-encodes to the same bytes, so
+    # say so and let the caller skip re-decoding a picture it is already
+    # showing. The path is still printed either way: a caller that has nothing
+    # loaded yet needs it even when the file on disk is already current.
+    if cmp -s "$tmp" "$DIR/$hex.png"; then
+        rm -f "$tmp"
+        echo "0 $DIR/$hex.png"
+        continue
+    fi
+
     mv -f "$tmp" "$DIR/$hex.png"
+    echo "1 $DIR/$hex.png"
 done
+
+[ "$prune" = 1 ] || exit 0
 
 # Drop thumbnails for windows that no longer exist.
 for f in "$DIR"/*.png; do

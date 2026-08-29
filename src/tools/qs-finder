@@ -11,7 +11,12 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # The checkout: two levels up from src/tools, four from inside the bundle.
 ROOT="${HERE%/Quickshell.app/Contents/Resources/tools}"; ROOT="${ROOT%/src/tools}"
 QS="$ROOT/Quickshell.app/Contents/MacOS/quickshell"
-CONFIG="${QS_FINDER_CONFIG:-$HOME/.config/quickshell/${QS_CONFIG_NAME:-end4}/finder.qml}"
+# The config: ~/.config/quickshell/<QS_CONFIG_NAME>/ where that directory
+# exists, else ~/.config/quickshell itself -- the flat layout darwin-dotfiles
+# keeps, and what quickshell's own "default" resolves to.
+CFG_DIR="$HOME/.config/quickshell"
+[ -d "$CFG_DIR/${QS_CONFIG_NAME:-end4}" ] && CFG_DIR="$CFG_DIR/${QS_CONFIG_NAME:-end4}"
+CONFIG="${QS_FINDER_CONFIG:-$CFG_DIR/finder.qml}"
 
 # --hidden: start the process without showing a window. The login agent uses this
 # so that the first time you actually open Files, the process is already warm --

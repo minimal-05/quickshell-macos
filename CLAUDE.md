@@ -14,10 +14,11 @@ commits on top, not a patch.
   `Quickshell.app/Contents/Resources/tools/`; `bin/<tool>` symlinks are
   generated from that. A new tool is a new file in `src/tools/`, nothing else.
 - **Shims** → `shims/`.
-- **Shell configs** are *not* here. They live in `~/.config/quickshell/<name>`,
-  in the `darwin-dotfiles` repo — `end4` and `mine`. Refer to them by path in
-  full; the `./shell` and `./examples/` symlinks that used to stand in for them
-  are gone, and nothing here should grow a new one.
+- **Shell config (bar, pills, services)** is *not* here. It lives in
+  `~/.config/quickshell` (flat: `shell.qml`, `settings.qml`, `finder.qml` at
+  the top), in the `darwin-dotfiles` repo. Refer to it by that path in full;
+  the `./shell` and `./examples/` symlinks that used to stand in for it are
+  gone, and nothing here should grow a new one.
 
 ## One binary: `qs` is the Mach-O
 
@@ -31,15 +32,18 @@ looks at the name it was started under (`src/launch/tools.cpp`):
   `bin/qs` is a script that `exec -a`s the Mach-O with the symlink's name);
 - `qs <tool> [args]` → the same;
 - `qs --tools` → the list;
-- otherwise it is quickshell, and `QS_CONFIG_NAME` defaults to `end4` unless
+- otherwise it is quickshell. With a `shell.qml` directly in
+  `~/.config/quickshell` (the layout in use) nothing is set and quickshell's
+  own "default" finds it; only where `~/.config/quickshell/end4/shell.qml`
+  exists instead does `QS_CONFIG_NAME` default to `end4`. Neither applies when
   `-c`/`-p`/`-m` was given or `QS_CONFIG_PATH` is in the environment (that is
   how `qs-ipc` is pointed at a test probe).
 
 Everything runs through it — end-4's QML (which calls `qs`, `hyprctl`,
 `notify-send` by bare name), skhd and karabiner via `bin/qs-ipc`, launchd via
 `bin/qs-start`. That config default is why nothing else names a config path;
-to point a launcher at the other config, set `QS_CONFIG_NAME=mine` — do not
-add a `-p`.
+to point a launcher at another config directory, set `QS_CONFIG_NAME=<name>`
+— do not add a `-p`.
 
 `bin/qs` stays a script rather than a symlink because NSBundle resolves the
 bundle from the executable's real path, so nothing may stand between the

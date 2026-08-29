@@ -228,7 +228,52 @@ Singleton {
                     ? ["yabai", "-m", "window", "--space", String(idx)]
                     : ["yabai", "-m", "window", win, "--space", String(idx)];
             }
-            return []; // free-positioning a window has no yabai equivalent
+
+            // Shim-only extension: `target` swaps two windows' slots. yabai
+            // refuses to free-position anything the tiling engine manages
+            // ("cannot move a managed window"), so warping onto the window
+            // already in the wanted slot is how a tiled window is repositioned.
+            const target = field("target");
+            if (target !== null) {
+                const tid = parseInt(target.replace(/^address:/, ""), 16);
+                if (win === null || isNaN(tid)) return null;
+                return ["yabai", "-m", "window", win, "--warp", String(tid)];
+            }
+
+            // Free positioning, which lands only for a floating window — the
+            // same windows Hyprland would have accepted this for.
+            const x = field("x");
+            const y = field("y");
+            if (x !== null && y !== null) {
+                const ax = Math.round(parseFloat(x));
+                const ay = Math.round(parseFloat(y));
+                if (isNaN(ax) || isNaN(ay)) return [];
+                const argv = ["yabai", "-m", "window"];
+                if (win !== null) argv.push(win);
+                return argv.concat(["--move", `abs:${ax}:${ay}`]);
+            }
+
+            return [];
+        }
+
+        // Shim-only extension: resize by moving the bsp fence on a corner. yabai
+        // errors ("cannot locate a bsp node fence") rather than no-ops when the
+        // window has no fence on the named side, so fall back to the opposite
+        // corner — the same edit seen from the other side of the split. Works
+        // for floating windows too, and on an inactive space yabai records the
+        // change and applies it when that space is next shown.
+        if (cmd.startsWith("hl.dsp.window.resize")) {
+            const win = windowId();
+            if (win === null) return null;
+
+            const dw = parseInt(field("dw") ?? "0", 10);
+            const dh = parseInt(field("dh") ?? "0", 10);
+            if (isNaN(dw) || isNaN(dh)) return null;
+            if (dw === 0 && dh === 0) return [];
+
+            return ["sh", "-c",
+                `yabai -m window ${win} --resize bottom_right:${dw}:${dh} `
+                + `|| yabai -m window ${win} --resize top_left:${-dw}:${-dh}`];
         }
 
         // Upstream this asks the compositor to fire a registered global
@@ -983,6 +1028,13 @@ Singleton {
 //
 //   hl.dsp.focus({workspace=N})         yabai -m space --focus N, creating
 //                                       Spaces first when N > their count
+//   hl.dsp.window.move({target=..})     yabai -m window ID --warp TARGET (swap
+//                                       slots; shim-only)
+//   hl.dsp.window.move({x=..,y=..})     yabai -m window [ID] --move abs:X:Y
+//                                       (floating windows only)
+//   hl.dsp.window.resize({dw=..,dh=..}) yabai -m window ID --resize
+//                                       bottom_right:DW:DH, else top_left
+//                                       (shim-only)
 //   hl.dsp.window.pin({window=..})      yabai -m window [ID] --toggle sticky
 //   hl.dsp.global("appid:name")         the GlobalShortcut of this process, or
 //                                       qs-ipc gs_<appid>_<name> press

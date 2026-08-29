@@ -1,0 +1,52 @@
+#!/bin/bash
+# Volume control that works whether or not the shell is running.
+#
+# Karabiner grabs the volume keys, so macOS never sees them. If they were
+# forwarded only to the shell, then any moment the shell is down -- crashed,
+# restarting, or reloading after a config edit -- the keys would do nothing at
+# all, which reads as "sometimes the volume registers and sometimes it doesn't".
+# Try the shell first so the OSD and the ramp still work, and fall back to
+# setting the volume directly when it does not answer.
+#
+# The curve below must match `curve` / `volumeSteps` in
+# ~/.config/quickshell/services/Audio.qml.
+
+set -uo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CURVE=1.5
+STEPS=16
+
+case "${1:-}" in
+    up)      "$HERE/qs-ipc" audio increment >/dev/null 2>&1 && exit 0; dir=1 ;;
+    down)    "$HERE/qs-ipc" audio decrement >/dev/null 2>&1 && exit 0; dir=-1 ;;
+    release) "$HERE/qs-ipc" audio release   >/dev/null 2>&1; exit 0 ;;
+    mute)
+        "$HERE/qs-ipc" audio mute >/dev/null 2>&1 && exit 0
+        osascript -e 'set volume output muted (not (output muted of (get volume settings)))'
+        exit 0
+        ;;
+    *) echo "usage: ${0##*/} up|down|release|mute" >&2; exit 2 ;;
+esac
+
+cur=$(osascript -e 'output volume of (get volume settings)' 2>/dev/null) || exit 1
+[ -n "$cur" ] || exit 1
+
+next=$(CUR="$cur" DIR="$dir" CURVE="$CURVE" STEPS="$STEPS" python3 -c '
+import os
+curve = float(os.environ["CURVE"])
+steps = int(os.environ["STEPS"])
+cur = max(0, min(100, int(os.environ["CUR"])))
+d = int(os.environ["DIR"])
+n = round(steps * (cur / 100.0) ** (1.0 / curve)) + d
+v = 100.0 * (max(0, min(steps, n)) / steps) ** curve
+# A step that rounds to the same whole percent would not register at all.
+v = round(v)
+if v == cur:
+    v = cur + d
+print(max(0, min(100, v)))
+') || exit 1
+
+osascript -e "set volume output volume $next"
+# Any deliberate volume change unmutes, the way the macOS keys do.
+osascript -e 'set volume output muted false'

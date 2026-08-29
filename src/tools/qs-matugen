@@ -185,6 +185,12 @@ def main() -> int:
     tmp.write_text(json.dumps(colors, indent=2) + "\n")
     tmp.replace(out)   # atomic: the shell watches this file
 
+    # JankyBorders reads the same file, but only at startup: re-running its
+    # config is what pushes the new scheme onto the running instance.
+    bordersrc = Path.home() / ".config/borders/bordersrc"
+    if bordersrc.is_file():
+        subprocess.run([str(bordersrc)], capture_output=True, check=False, timeout=10)
+
     print(f"wrote {len(colors)} colours to {out} ({args.mode}, {args.scheme}, from {source})")
     return 0
 

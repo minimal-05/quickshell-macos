@@ -110,6 +110,24 @@ bool selectsConfig(int argc, char** argv) {
 	return false;
 }
 
+// Whether `qs` should default QS_CONFIG_NAME to `name`. quickshell resolves a
+// name to <config>/quickshell/<name>/shell.qml, but a shell.qml directly in
+// <config>/quickshell -- the flat layout darwin-dotfiles keeps -- makes it
+// skip that directory's subfolders, so a name there can only fail. That flat
+// file is what the unnamed "default" config resolves to; leave the name unset
+// and every `qs` and `qs ipc call` lands on it.
+bool namedConfigExists(const char* name) {
+	std::string base;
+	if (const auto* xdg = getenv("XDG_CONFIG_HOME"); xdg != nullptr && *xdg != '\0') base = xdg;
+	else if (const auto* home = getenv("HOME"); home != nullptr) base = std::string(home) + "/.config";
+	else return false;
+	base += "/quickshell";
+
+	struct stat st {};
+	if (stat((base + "/shell.qml").c_str(), &st) == 0 && S_ISREG(st.st_mode)) return false;
+	return stat((base + "/" + name + "/shell.qml").c_str(), &st) == 0 && S_ISREG(st.st_mode);
+}
+
 // quickshell's own subcommands win over a tool of the same name.
 bool isBuiltin(const std::string& arg) {
 	return arg == "log" || arg == "list" || arg == "kill" || arg == "ipc" || arg == "msg";
@@ -200,7 +218,7 @@ void dispatch(int argc, char** argv) {
 		unsetenv("QS_CONFIG_PATH");
 	} else if (const auto* path = getenv("QS_CONFIG_PATH"); path != nullptr && *path != '\0') {
 		unsetenv("QS_CONFIG_NAME");
-	} else {
+	} else if (namedConfigExists(DEFAULT_CONFIG)) {
 		setenv("QS_CONFIG_NAME", DEFAULT_CONFIG, 0);
 	}
 }

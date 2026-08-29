@@ -44,7 +44,12 @@ QS="$ROOT/Quickshell.app/Contents/MacOS/quickshell"
 # QS_SHELL_CONFIG has named the shell; otherwise it is the default config's
 # root, the same one a bare `qs` starts (QS_CONFIG_NAME, defaulted by the
 # binary itself; src/launch/tools.cpp).
-config="${QS_SHELL_CONFIG:-$HOME/.config/quickshell/${QS_CONFIG_NAME:-end4}/shell.qml}"
+# The config: ~/.config/quickshell/<QS_CONFIG_NAME>/ where that directory
+# exists, else ~/.config/quickshell itself -- the flat layout darwin-dotfiles
+# keeps, and what quickshell's own "default" resolves to.
+CFG_DIR="$HOME/.config/quickshell"
+[ -d "$CFG_DIR/${QS_CONFIG_NAME:-end4}" ] && CFG_DIR="$CFG_DIR/${QS_CONFIG_NAME:-end4}"
+config="${QS_SHELL_CONFIG:-$CFG_DIR/shell.qml}"
 
 app=""
 icon=""

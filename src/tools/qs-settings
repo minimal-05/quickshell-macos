@@ -1,6 +1,9 @@
 #!/bin/bash
 # Open end-4's settings window, or focus it if it is already open.
 #
+#   qs-settings          open, or show the hidden window over IPC and focus it
+#   qs-settings --quit   end the idle settings process
+#
 # Settings is a standalone quickshell process (an ApplicationWindow in
 # settings.qml), not a panel inside the running shell — that is how end-4 does it
 # on Linux too.
@@ -11,7 +14,12 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # The checkout: two levels up from src/tools, four from inside the bundle.
 ROOT="${HERE%/Quickshell.app/Contents/Resources/tools}"; ROOT="${ROOT%/src/tools}"
 QS="$ROOT/Quickshell.app/Contents/MacOS/quickshell"
-CONFIG="${QS_SETTINGS_CONFIG:-$HOME/.config/quickshell/${QS_CONFIG_NAME:-end4}/settings.qml}"
+# The config: ~/.config/quickshell/<QS_CONFIG_NAME>/ where that directory
+# exists, else ~/.config/quickshell itself -- the flat layout darwin-dotfiles
+# keeps, and what quickshell's own "default" resolves to.
+CFG_DIR="$HOME/.config/quickshell"
+[ -d "$CFG_DIR/${QS_CONFIG_NAME:-end4}" ] && CFG_DIR="$CFG_DIR/${QS_CONFIG_NAME:-end4}"
+CONFIG="${QS_SETTINGS_CONFIG:-$CFG_DIR/settings.qml}"
 
 # PATH, XDG_RUNTIME_DIR and QML2_IMPORT_PATH are the binary's own doing.
 
@@ -19,16 +27,24 @@ CONFIG="${QS_SETTINGS_CONFIG:-$HOME/.config/quickshell/${QS_CONFIG_NAME:-end4}/s
 # the rule instead of stacking copies.
 yabai -m rule --add label=quickshell app="^quickshell$" manage=off >/dev/null 2>&1 || true
 
-# Already open? Raise it rather than starting a second copy.
+# Already running? Reuse it -- closing the window only hides it, so the process
+# is usually still there and showing it again skips ~2s of QML loading. IPC first
+# (it may be hidden, which yabai cannot see), then focus.
 #
 # Short, specific pattern on purpose: macOS pgrep -f silently truncates long
 # patterns, so a full command line here can match the wrong process.
-if pgrep -f "end4-ii/settings.qml" >/dev/null 2>&1; then
+if pgrep -f "quickshell.*/settings.qml" >/dev/null 2>&1; then
+    if [ "${1:-}" = "--quit" ]; then
+        exec "$QS" -p "$CONFIG" ipc call settings quit
+    fi
+    "$QS" -p "$CONFIG" ipc call settings open >/dev/null 2>&1
     yabai -m query --windows 2>/dev/null \
         | jq -r '.[] | select(.title | test("Settings")) | .id' 2>/dev/null \
         | head -1 \
         | xargs -I{} yabai -m window --focus {} 2>/dev/null
     exit 0
 fi
+
+[ "${1:-}" = "--quit" ] && exit 0
 
 exec "$QS" -p "$CONFIG"

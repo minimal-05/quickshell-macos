@@ -20,7 +20,12 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="${HERE%/Quickshell.app/Contents/Resources/tools}"; ROOT="${ROOT%/src/tools}"
 QS="$ROOT/Quickshell.app/Contents/MacOS/quickshell"
 SRC="${QS_SRC:-$ROOT}"
-CONFIG="${QS_CONFIG:-$HOME/.config/quickshell/${QS_CONFIG_NAME:-end4}/shell.qml}"
+# The config: ~/.config/quickshell/<QS_CONFIG_NAME>/ where that directory
+# exists, else ~/.config/quickshell itself -- the flat layout darwin-dotfiles
+# keeps, and what quickshell's own "default" resolves to.
+CFG_DIR="$HOME/.config/quickshell"
+[ -d "$CFG_DIR/${QS_CONFIG_NAME:-end4}" ] && CFG_DIR="$CFG_DIR/${QS_CONFIG_NAME:-end4}"
+CONFIG="${QS_CONFIG:-$CFG_DIR/shell.qml}"
 LOG=/tmp/qs-dev.log
 
 # Only PATH, for cmake below. XDG_RUNTIME_DIR and QML2_IMPORT_PATH belong to
