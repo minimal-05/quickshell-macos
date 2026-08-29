@@ -34,6 +34,16 @@ export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp/quickshell-$UID}"
 mkdir -p "$XDG_RUNTIME_DIR"
 export QML2_IMPORT_PATH="$ROOT/shims${QML2_IMPORT_PATH:+:$QML2_IMPORT_PATH}"
 
+# The wallpaper picker is a dialog, not a tile: yabai leaves it alone and puts it
+# above the window that asked for it, which is usually settings. Matched on the
+# title the window is born with -- rules are read when a window is created, so
+# the picker gets a window of its own rather than borrowing a plain one.
+# Labelled so repeated runs replace the rule instead of stacking copies.
+if [ -n "$PICK_MODE" ]; then
+    yabai -m rule --add label=quickshell-picker app="^(Files|quickshell)$" \
+        title="^Choose a wallpaper$" manage=off sub-layer=above >/dev/null 2>&1 || true
+fi
+
 # Already open? Raise it rather than starting a second copy.
 #
 # Deliberately not `pgrep -f <config path>`: that matches *any* process whose
