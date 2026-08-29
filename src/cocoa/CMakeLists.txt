@@ -4,6 +4,7 @@ qt_add_library(quickshell-cocoa STATIC
 	nswindow.mm
 	appicon.mm
 	focusgrab.mm
+	filewatch.cpp
 	panel_window.cpp
 )
 

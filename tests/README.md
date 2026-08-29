@@ -25,6 +25,13 @@ distinct instance), and the harness kills only the pid it started.
 - `qs-reap [--dry-run]` — kills orphan `mediaremote-adapter.pl` helpers and
   prunes dead `$XDG_RUNTIME_DIR/quickshell` instance dirs. Run by `qs-dev`
   and `qs-start`.
+- `qs-spawns <pid> [seconds] [-v]` — every process spawned under an instance,
+  by name, polled from libproc at 1 ms so the 10 ms `yabai`/`jq` children
+  `qs-perf` misses are counted. `-v` prints each one as it appears.
+- `qs-yabai-signals install|remove|status` — the yabai signals behind the
+  Hyprland/ToplevelManager shims (one `touch` of
+  `$XDG_RUNTIME_DIR/quickshell/yabai/<event>` per event). The shims install
+  them on start; `status` shows what yabai holds.
 
 ## Checks
 
@@ -38,6 +45,7 @@ distinct instance), and the harness kills only the pid it started.
 | `sysstats.sh` + `_probe_resourceusage.qml` | `bin/qs-sysstats` emits the CPU-tick/memory/swap JSON `services/ResourceUsage.qml` diffs (binary and python fallback agree, ticks are cumulative), and the service turns two samples into a CPU% with no `top` child | `bash tests/sysstats.sh` (`QS_CONFIG_ROOT`, `QS_BINARY` to point at a config checkout / built binary) |
 | `standins.sh` | every verb of the Linux-tool stand-ins (`hyprctl`, `hyprsunset`, `loginctl`/`systemctl`/`reboot`, `ydotool`, `secret-tool`, `checkupdates`): session and key verbs via `--dry-run`, gamma on a private socket, Night Shift and the focused Space put back | `bash tests/standins.sh` (`STANDINS_NO_SPACE=1` skips the Space switch) |
 | `shims.sh` | the UPower, Bluetooth, Mpris and kirigami Icon shims answer with the shape consumers read (`_probe_*.qml`, one throwaway instance each) | `bash tests/shims.sh [upower bluetooth mpris kirigami]`; `QS_BINARY=... PERF=40` for a worktree and a spawn histogram |
+| `yabai-events.sh` + `_probe_hyprland.qml` | the yabai-signal path: workspaces/toplevels populate, `hl.dsp.global` fires an in-process GlobalShortcut, `HyprlandToplevel.wayland` resolves, `qs_*` signals register once, an idle instance runs nothing periodic (`qs-spawns`), a Space switch reaches `focusedWorkspace` within 50 ms of the signal file's mtime for one space query and one window query | `bash tests/yabai-events.sh` (`YE_NO_SPACE=1` skips the Space switch; `QS_BINARY` for a worktree). Removes the signals afterwards only if none were registered before |
 
 Add a `_probe_<name>.qml` (with `IpcHandler` functions returning strings) or
 a `tests/<name>.sh` for every non-trivial branch of logic; the verifier runs
