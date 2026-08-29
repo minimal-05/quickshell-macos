@@ -6,33 +6,28 @@
 #
 #   qs-probe            run the standard enter/leave sequence
 #   qs-probe --keep     leave the probe running afterwards
+#   qs-probe --watch [secs]   print hover state live while a human moves the pointer
+#
+# The instance lifecycle (start, wait for "Configuration Loaded", kill only
+# that pid, refuse live roots) is qs-test's; this script only sequences the
+# pointer moves and the ipc questions and prints the same table it always has.
 
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export PATH="$ROOT/bin:/opt/homebrew/bin:$PATH"
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp/quickshell-$UID}"
 export QML2_IMPORT_PATH="$ROOT/shims"
-mkdir -p "$XDG_RUNTIME_DIR"
 
 WARP="$ROOT/bin/warp.py"
 LOG=/tmp/qs-probe.log
-
+BINARY="${QS_BINARY:-$ROOT/bin/quickshell}"
 PROBE_QML="${QS_PROBE_QML:-$ROOT/tests/hoverprobe.qml}"
-PROBE_PAT="$(basename "$PROBE_QML")"
-pkill -f "$PROBE_PAT" 2>/dev/null
-sleep 1
-nohup "$ROOT/bin/quickshell" -p "$PROBE_QML" > "$LOG" 2>&1 &
-disown
 
-# Poll for readiness instead of sleeping a fixed amount.
-for _ in $(seq 1 60); do
-    grep -q 'Configuration Loaded' "$LOG" 2>/dev/null && break
-    sleep 0.5
-done
-PID="$(pgrep -f "$PROBE_PAT" | head -1)"
-[ -n "$PID" ] || { echo "probe failed to start; see $LOG" >&2; exit 1; }
+PID="$("$ROOT/bin/qs-test" "$PROBE_QML" --binary "$BINARY" --log "$LOG" --shell)" \
+    || { echo "probe failed to start; see $LOG" >&2; exit 1; }
+stop() { kill "$PID" 2>/dev/null; }
 
-ask() { "$ROOT/bin/quickshell" ipc --pid "$PID" call probe "$1" 2>/dev/null | tr -d '\r\n'; }
+ask() { "$BINARY" -p "$PROBE_QML" ipc call probe "$1" 2>/dev/null | tr -d '\r\n'; }
 move() { /usr/bin/python3 "$WARP" "$1" "$2" >/dev/null 2>&1; sleep 0.6; }
 
 pass=0; fail=0
@@ -60,7 +55,7 @@ if [ "${1:-}" = "--watch" ]; then
         sleep 0.25
     done
     echo "  final: $(ask events)"
-    pkill -f "$PROBE_PAT" 2>/dev/null
+    stop
     exit 0
 fi
 
@@ -74,5 +69,5 @@ move 1500 900; check "far corner"              outside "$(ask hover)"
 echo "  events: $(ask events)"
 echo "  $pass passed, $fail failed"
 
-[ "${1:-}" = "--keep" ] || pkill -f "$PROBE_PAT" 2>/dev/null
+[ "${1:-}" = "--keep" ] || stop
 exit $([ "$fail" -eq 0 ] && echo 0 || echo 1)
