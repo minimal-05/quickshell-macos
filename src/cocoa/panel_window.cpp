@@ -242,7 +242,18 @@ void CocoaPanelWindow::updatePointerInside(const QPoint& rawPointer) {
 		}
 	}
 
-	auto inside = this->window->geometry().contains(pointer);
+	auto geometry = this->window->geometry();
+	auto local = pointer - geometry.topLeft();
+	auto inside = geometry.contains(pointer) && (!this->mHasMask || this->mMaskRegion.contains(local));
+
+	// The native input switch follows the mask, not the window: with a mask
+	// set, the panel takes input only while the pointer is in it, so a click
+	// anywhere else on the panel lands on what is underneath. Without one the
+	// panel takes input over its whole frame, as it always did.
+	if (this->mRegisteredView != 0) {
+		setPanelInputEnabled(this->mRegisteredView, !this->mHasMask || inside);
+	}
+
 	auto left = this->mPointerInside && !inside;
 	this->mPointerInside = inside;
 
@@ -279,13 +290,11 @@ void CocoaPanelWindow::updatePointerInside(const QPoint& rawPointer) {
 	if (pointer == this->mLastPointer) return;
 	this->mLastPointer = pointer;
 
-	auto local = QPointF(pointer - this->window->geometry().topLeft());
-
 	QCoreApplication::postEvent(
 	    this->window,
 	    new QMouseEvent(
 	        QEvent::MouseMove,
-	        local,
+	        QPointF(local),
 	        QPointF(pointer),
 	        Qt::NoButton,
 	        Qt::NoButton,
@@ -644,6 +653,33 @@ void CocoaPanelWindow::updateDimensions(bool propagate) {
 	this->window->setGeometry(geometry);
 
 	if (propagate) CocoaPanelStack::instance()->updateLowerDimensions(this);
+}
+
+void CocoaPanelWindow::onPolished() {
+	// Upstream's onPolished turns the mask into QWindow::setMask plus
+	// WindowTransparentForInput when it is empty. On cocoa setMask clips the
+	// rendered layer to the region, so the mask is kept here as a hit-test
+	// region instead and the window is never told about it; the pointer poll
+	// applies it (updatePointerInside). Everything else upstream polishes is
+	// nothing, so this replaces rather than extends it.
+	if (this->pendingPolish.inputMask) {
+		this->mHasMask = this->mMask != nullptr;
+		this->mMaskRegion = this->mHasMask
+		                      ? this->mMask->applyTo(QRect(0, 0, this->width(), this->height()))
+		                      : QRegion();
+		this->pendingPolish.inputMask = false;
+
+		qInfo(
+		    "cocoa: mask -> hit-test (%lld rects)",
+		    static_cast<long long>(this->mHasMask ? this->mMaskRegion.rectCount() : -1)
+		);
+
+		// A pointer resting on the panel is inside or outside the new region
+		// right now, not at its next move.
+		this->updatePointerInside(QCursor::pos());
+	}
+
+	emit this->polished();
 }
 
 void CocoaPanelWindow::updatePanelStack() {

@@ -8,6 +8,7 @@
 #include <qscreen.h>
 #include <qtclasshelpermacros.h>
 #include <qpoint.h>
+#include <qregion.h>
 #include <qtimer.h>
 #include <qtmetamacros.h>
 #include <qtypes.h>
@@ -111,6 +112,9 @@ signals:
 	QSDOC_HIDE void focusableChanged();
 	void animateChanged();
 
+protected:
+	void onPolished() override;
+
 private slots:
 	void cocoaInit();
 	void updatePanelStack();
@@ -177,6 +181,12 @@ private:
 	bool mHasLayerOverride = false;
 	bool mPointerInside = false;
 	QPoint mLastPointer;
+
+	// PanelWindow.mask, as a hit-test region in window coordinates. Never
+	// handed to QWindow::setMask -- see setPanelInputEnabled. A null mask
+	// (mHasMask false) is the whole window; a set but empty one is nothing.
+	bool mHasMask = false;
+	QRegion mMaskRegion;
 	PanelLayer mLayerOverride = PanelLayer::Top;
 
 	// clang-format off

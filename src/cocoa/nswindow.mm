@@ -21,6 +21,8 @@ namespace {
 struct PanelConfig {
 	PanelLayer layer = PanelLayer::Top;
 	bool focusable = false;
+	/// See setPanelInputEnabled.
+	bool acceptsInput = true;
 };
 
 QHash<WId, PanelConfig>& panelConfigs() {
@@ -172,7 +174,9 @@ void applyConfig(WId view, const PanelConfig& config) {
 	// tracking area installed further down is NSTrackingActiveAlways, so real
 	// pointer movement is delivered to it whatever is in front of the panel --
 	// taking the window out of AppKit's hit-testing is what actually stops it.
-	window.ignoresMouseEvents = captureInert();
+	// The same switch is the panel's input mask (setPanelInputEnabled).
+	auto ignores = captureInert() || !config.acceptsInput;
+	if (window.ignoresMouseEvents != ignores) window.ignoresMouseEvents = ignores;
 
 	// acceptsMouseMovedEvents alone is not enough. Qt installs its own tracking
 	// area with NSTrackingActiveInActiveApp, so hover only works once something
@@ -416,8 +420,28 @@ void registerPanel(WId view, PanelLayer layer, bool focusable) {
 	ensureObserver();
 
 	auto config = PanelConfig {.layer = layer, .focusable = focusable};
+
+	// Re-registration (a flag change, a new level) must not flip the input
+	// switch back on under a pointer that is outside the mask.
+	if (auto existing = panelConfigs().find(view); existing != panelConfigs().end()) {
+		config.acceptsInput = existing->acceptsInput;
+	}
+
 	panelConfigs().insert(view, config);
 	applyConfig(view, config);
+}
+
+void setPanelInputEnabled(WId view, bool enabled) {
+	auto config = panelConfigs().find(view);
+	if (config == panelConfigs().end() || config->acceptsInput == enabled) return;
+
+	config->acceptsInput = enabled;
+
+	auto* window = windowFor(view);
+	if (window == nil) return;
+
+	auto ignores = captureInert() || !enabled;
+	if (window.ignoresMouseEvents != ignores) window.ignoresMouseEvents = ignores;
 }
 
 namespace {

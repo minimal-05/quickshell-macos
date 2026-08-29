@@ -114,6 +114,20 @@ void focusPanel(WId view);
 /// focusPanel() ran. No-op if nothing was recorded.
 void unfocusPanel();
 
+/// Whether the panel backing @p view takes pointer input at the moment.
+///
+/// This is how PanelWindow.mask works on macOS. Upstream hands the region to
+/// QWindow::setMask, which the cocoa plugin implements by clipping the layer:
+/// the panel is cut down to its mask on screen, which is the opposite of what
+/// a mask is for (a bar's popups draw outside it; screen corners draw and
+/// take nothing). AppKit has no per-window input region; what it has is
+/// ignoresMouseEvents, a whole-window switch. CocoaPanelWindow keeps the
+/// region itself and flips this switch as the pointer crosses the region's
+/// edge, from the same poll that already synthesises enter and leave, so a
+/// click outside the region falls through to the window underneath and the
+/// panel still paints all of itself.
+void setPanelInputEnabled(WId view, bool enabled);
+
 /// Stop tracking a window previously passed to registerPanel.
 void unregisterPanel(WId view);
 
