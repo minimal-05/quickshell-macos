@@ -1,0 +1,419 @@
+#!/usr/bin/env python3
+"""hyprctl(1) stand-in for the macOS port.
+
+end-4's config shells out to hyprctl in a dozen places. Only the subcommands it
+actually uses exist here; each is answered from yabai, CoreGraphics or macOS
+defaults and printed in the JSON shape hyprctl -j produces so the QML that
+parses it is unchanged.
+
+  hyprctl [-j] monitors | cursorpos | binds | devices | activeworkspace | workspaces
+      binds: ~/.config/skhd/skhdrc plus ~/.config/quickshell-macos/shortcuts.json
+  hyprctl getoption [-j] <option>
+  hyprctl dispatch <dispatcher...>          hl.dsp.* lua form or classic form
+  hyprctl --batch "cmd; cmd; ..."
+  hyprctl keyword <name> <value>            accepted, no-op (no Hyprland config)
+  hyprctl reload                            accepted, no-op
+  hyprctl hyprsunset temperature [K]        Night Shift via `nightlight`
+  hyprctl hyprsunset gamma <25-100>         bin/hyprsunset daemon
+  hyprctl [--dry-run] ...                   print the command that would run
+"""
+import ctypes
+import json
+import os
+import re
+import subprocess
+import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+DRY = False
+
+
+def run(argv, check=False):
+    if DRY:
+        print(" ".join(argv))
+        return ""
+    r = subprocess.run(argv, capture_output=True, text=True)
+    if check and r.returncode != 0:
+        sys.stderr.write(r.stderr)
+    return r.stdout
+
+
+def yabai(*args):
+    out = run(["yabai", "-m", "query", *args])
+    return json.loads(out) if out.strip() else []
+
+
+def die(msg, code=1):
+    sys.stderr.write(f"hyprctl: {msg}\n")
+    sys.exit(code)
+
+
+# ---------------------------------------------------------------- cursorpos
+def cursorpos(as_json):
+    cg = ctypes.CDLL("/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics")
+
+    class CGPoint(ctypes.Structure):
+        _fields_ = [("x", ctypes.c_double), ("y", ctypes.c_double)]
+
+    cg.CGEventCreate.argtypes = [ctypes.c_void_p]
+    cg.CGEventCreate.restype = ctypes.c_void_p
+    cg.CGEventGetLocation.argtypes = [ctypes.c_void_p]
+    cg.CGEventGetLocation.restype = CGPoint
+    cg.CFRelease.argtypes = [ctypes.c_void_p]
+    ev = cg.CGEventCreate(None)
+    p = cg.CGEventGetLocation(ev)
+    cg.CFRelease(ev)
+    x, y = int(p.x), int(p.y)
+    print(json.dumps({"x": x, "y": y}) if as_json else f"{x}, {y}")
+
+
+# ----------------------------------------------------------------- monitors
+def monitors(as_json):
+    spaces = yabai("--spaces")
+    out = []
+    for d in yabai("--displays"):
+        active = next((s for s in spaces if s["display"] == d["index"] and s.get("is-visible")), None)
+        out.append({
+            "id": d["index"] - 1,
+            "name": f"Display-{d['index']}",
+            "description": f"Display {d['index']}",
+            "make": "", "model": "", "serial": "",
+            "width": int(d["frame"]["w"]), "height": int(d["frame"]["h"]),
+            "refreshRate": 60.0,
+            "x": int(d["frame"]["x"]), "y": int(d["frame"]["y"]),
+            "activeWorkspace": {"id": active["index"], "name": str(active["index"])} if active else {"id": 1, "name": "1"},
+            "specialWorkspace": {"id": 0, "name": ""},
+            "reserved": [0, 0, 0, 0],
+            "scale": 1.0, "transform": 0,
+            "focused": bool(d.get("has-focus")),
+            "dpmsStatus": True, "vrr": False, "disabled": False,
+        })
+    if as_json:
+        print(json.dumps(out))
+    else:
+        for m in out:
+            print(f"Monitor {m['name']} (ID {m['id']}):\n\t{m['width']}x{m['height']} at {m['x']}x{m['y']}\n\tfocused: {'yes' if m['focused'] else 'no'}\n")
+
+
+def space_obj(s):
+    return {"id": s["index"], "name": str(s["index"]), "monitor": f"Display-{s['display']}",
+            "monitorID": s["display"] - 1, "windows": len(s.get("windows", [])),
+            "hasfullscreen": False, "lastwindow": "", "lastwindowtitle": ""}
+
+
+def workspaces(as_json):
+    out = [space_obj(s) for s in yabai("--spaces")]
+    print(json.dumps(out) if as_json else "\n".join(f"workspace ID {w['id']} ({w['name']}) on monitor {w['monitor']}:" for w in out))
+
+
+def activeworkspace(as_json):
+    s = yabai("--spaces", "--space")
+    out = space_obj(s) if s else {}
+    print(json.dumps(out) if as_json else f"workspace ID {out.get('id')} ({out.get('name')}) on monitor {out.get('monitor')}:")
+
+
+# ------------------------------------------------------------------ binds
+# Hyprland modmask bits (xkb): SHIFT=1 CAPS=2 CTRL=4 ALT=8 MOD2=16 MOD3=32 SUPER=64 MOD5=128.
+SKHD_MODS = {"shift": 1, "lshift": 1, "rshift": 1, "ctrl": 4, "lctrl": 4, "rctrl": 4,
+             "alt": 8, "lalt": 8, "ralt": 8, "cmd": 64, "lcmd": 64, "rcmd": 64,
+             "hyper": 1 | 4 | 8 | 64, "meh": 1 | 4 | 8, "fn": 0}
+SKHD_KEYS = {"return": "Return", "tab": "Tab", "space": "Space", "backspace": "BackSpace",
+             "escape": "Escape", "delete": "Delete", "home": "Home", "end": "End",
+             "pageup": "Prior", "pagedown": "Next", "insert": "Insert",
+             "left": "Left", "right": "Right", "up": "Up", "down": "Down",
+             "0x2C": "Slash", "0x2B": "Comma", "0x2F": "Period", "0x32": "grave",
+             "0x1B": "Minus", "0x18": "Equal", "0x21": "bracketleft", "0x1E": "bracketright",
+             "0x29": "Semicolon", "0x27": "apostrophe", "0x2A": "backslash"}
+# What the shell's own IPC verbs mean, for the cheatsheet: target -> (category, {fn: text}).
+IPC_DESC = {
+    "search": ("Apps", {"toggle": "Launcher", "workspacesToggle": "Overview"}),
+    "sidebarLeft": ("Shell", {"toggle": "Left sidebar"}),
+    "sidebarRight": ("Shell", {"toggle": "Right sidebar"}),
+    "mediaControls": ("Shell", {"toggle": "Media controls"}),
+    "bar": ("Shell", {"toggle": "Toggle bar"}),
+    "osk": ("Shell", {"toggle": "On-screen keyboard"}),
+    "wallpaperSelector": ("Shell", {"toggle": "Wallpaper picker"}),
+    "session": ("Session", {"toggle": "Session menu"}),
+    "cheatsheet": ("Shell", {"toggle": "Cheatsheet"}),
+    "overlay": ("Shell", {"toggle": "Overlay"}),
+    "region": ("Utilities", {"screenshot": "Screenshot region"}),
+    "lock": ("Session", {"activate": "Lock"}),
+}
+
+
+def describe(cmd, section):
+    words = cmd.split()
+    base = os.path.basename(words[0]) if words else ""
+    if base == "qs-ipc" and len(words) >= 3:
+        cat, fns = IPC_DESC.get(words[1], ("Shell", {}))
+        return f"{cat}: {fns.get(words[2], words[1] + ' ' + words[2])}"
+    if base.startswith("qs-"):
+        return f"Shell: {base[3:].replace('-', ' ').capitalize()}"
+    if base == "yabai":
+        return f"Window: {' '.join(w for w in words[2:] if w != '--')}"
+    if base == "open":
+        return f"Apps: {os.path.splitext(os.path.basename(words[-1].rstrip('/')))[0]}"
+    app = re.search(r"/([^/]+)\.app/", cmd)
+    if app:
+        return f"Apps: {app.group(1)}"
+    return f"{section}: {base}" if section else base
+
+
+def keyname(key):
+    return SKHD_KEYS.get(key) or SKHD_KEYS.get(key.lower()) or (key.upper() if len(key) == 1 else key.capitalize())
+
+
+def modmask(mods):
+    mask = 0
+    for mod in mods:
+        mask |= SKHD_MODS.get(mod, 0)
+    return mask
+
+
+def bind_obj(mask, key, description, dispatcher, arg):
+    return {"locked": False, "mouse": False, "release": False, "repeat": False, "longPress": False,
+            "non_consuming": False, "has_description": True, "modmask": mask, "submap": "",
+            "key": key, "keycode": 0, "catch_all": False,
+            "description": description, "dispatcher": dispatcher, "arg": arg}
+
+
+def shortcut_binds():
+    """The GlobalShortcut chord table, {"quickshell:lock": "ctrl+alt+cmd+l", ...},
+    reported the way Hyprland reports `bind = MODS, KEY, global, appid:name`.
+    Absent until the native GlobalShortcut lands, so an empty list then."""
+    path = os.environ.get("QS_SHORTCUTS", os.path.expanduser("~/.config/quickshell-macos/shortcuts.json"))
+    try:
+        table = json.load(open(path))
+    except (OSError, ValueError):
+        return []
+    out = []
+    for name, chord in (table.items() if isinstance(table, dict) else []):
+        if not isinstance(chord, str) or not chord.strip():
+            continue
+        parts = [x.strip().lower() for x in chord.split("+") if x.strip()]
+        key = "" if parts[-1] in SKHD_MODS else parts[-1]  # a bare "cmd" is a modifier-only hold
+        mods = parts[:-1] if key else parts
+        short = name.partition(":")[2] or name
+        out.append(bind_obj(modmask(mods), keyname(key) if key else "",
+                            "Shell: " + re.sub(r"(?<=[a-z])(?=[A-Z])", " ", short).capitalize(), "global", name))
+    return out
+
+
+def binds(as_json):
+    rc = os.environ.get("SKHD_RC", os.path.expanduser("~/.config/skhd/skhdrc"))
+    out = shortcut_binds()
+    section = ""
+    try:
+        lines = open(rc).read().splitlines()
+    except OSError:
+        lines = []
+    for line in lines:
+        s = line.strip()
+        if not s:
+            continue
+        if s.startswith("#"):
+            text = s.lstrip("# ").strip()
+            if "quickshell bindings" in text:
+                section = "Shell"
+            elif text and not text.startswith("---") and len(text) < 40:
+                section = text.split("(")[0].strip().capitalize()
+            continue
+        m = re.match(r"^([^:]+?)\s*:\s*(.+)$", s)
+        if not m:
+            continue
+        chord, cmd = m.group(1), m.group(2)
+        if "-" in chord:
+            mods, key = chord.rsplit("-", 1)
+            mods = [x.strip().lower() for x in mods.split("+") if x.strip()]
+        else:
+            mods, key = [], chord
+        out.append(bind_obj(modmask(mods), keyname(key.strip()), describe(cmd, section), "exec", cmd))
+    if as_json:
+        print(json.dumps(out))
+    else:
+        for b in out:
+            print(f"bind\n\tmodmask: {b['modmask']}\n\tkey: {b['key']}\n\tdescription: {b['description']}\n\tdispatcher: {b['dispatcher']}\n\targ: {b['arg']}\n")
+
+
+# ----------------------------------------------------------------- devices
+def input_sources(key):
+    out = run(["defaults", "read", "com.apple.HIToolbox", key])
+    names = re.findall(r'"KeyboardLayout Name" = "?([^";\n]+)"?;', out)
+    return [n.strip() for n in names]
+
+
+def devices(as_json):
+    enabled = input_sources("AppleEnabledInputSources") or ["ABC"]
+    selected = input_sources("AppleSelectedInputSources")
+    active = selected[0] if selected else enabled[0]
+    out = {"mice": [], "keyboards": [{"address": "0x0", "name": "apple-internal-keyboard", "rules": "", "model": "",
+                                      "layout": ",".join(enabled), "variant": "", "options": "",
+                                      "active_keymap": active, "capsLock": False, "numLock": False, "main": True}],
+           "tablets": [], "touch": [], "switches": []}
+    print(json.dumps(out) if as_json else f"Keyboard: apple-internal-keyboard\n\tactive keymap: {active}")
+
+
+# --------------------------------------------------------------- getoption
+def getoption(as_json, name):
+    if not name:
+        die("getoption needs an option name")
+    # There is no Hyprland config to read; every option reads as unset so the
+    # settings pages show defaults and GameMode reads "animations enabled".
+    val = 1 if name == "animations:enabled" else 0
+    print(json.dumps({"option": name, "int": val, "set": False}) if as_json else f"option {name}: {val}")
+
+
+# ---------------------------------------------------------------- dispatch
+def lua_field(cmd, name):
+    m = re.search(name + r'\s*=\s*"?([^",}]+)"?', cmd)
+    return m.group(1).strip() if m else None
+
+
+def dispatch(cmd):
+    """Translate the dispatchers end-4 shells out with (Lock.qml, SidebarLeft.qml)
+    into yabai / warp calls. The shim's Hyprland.dispatch() has the full table;
+    ponytail: this covers only the argv end-4 emits from `bash -c`, the upgrade
+    path is an `IpcHandler { target: "hyprland" }` on the shim and a single
+    `quickshell ipc call hyprland dispatch` here."""
+    cmd = cmd.strip()
+    if not cmd:
+        return 0
+    argv = None
+    if cmd.startswith("hl.dsp.focus"):
+        ws = lua_field(cmd, "workspace")
+        mon = lua_field(cmd, "monitor")
+        if ws is not None:
+            argv = space_focus(ws)
+        elif mon is not None:
+            m = re.search(r"(\d+)$", mon)
+            argv = ["yabai", "-m", "display", "--focus", m.group(1)] if m else []
+        else:
+            argv = []
+    elif cmd.startswith("hl.dsp.cursor.move"):
+        x, y = lua_field(cmd, "x"), lua_field(cmd, "y")
+        argv = [sys.executable, os.path.join(HERE, "warp.py"), x or "0", y or "0"]
+    elif cmd.startswith("hl.dsp."):
+        argv = []
+    else:
+        words = cmd.split()
+        if words[0] == "workspace" and len(words) > 1:
+            argv = space_focus(words[1])
+        elif words[0] == "focusmonitor" and len(words) > 1:
+            m = re.search(r"(\d+)$", words[1])
+            argv = ["yabai", "-m", "display", "--focus", m.group(1)] if m else []
+        elif words[0] == "movecursor" and len(words) > 2:
+            argv = [sys.executable, os.path.join(HERE, "warp.py"), words[1], words[2]]
+        elif words[0] in ("exec", "execr"):
+            argv = ["/bin/sh", "-c", " ".join(words[1:])]
+        else:
+            argv = []
+    if not argv:
+        sys.stderr.write(f"hyprctl: dispatch has no macOS equivalent, ignored: {cmd}\n")
+        print("ok")
+        return 0
+    if DRY:
+        print(" ".join(argv))
+        return 0
+    r = subprocess.run(argv, capture_output=True, text=True)
+    if r.returncode != 0 and "already focused" in r.stderr:
+        r.returncode = 0  # yabai refuses a no-op focus; Hyprland says ok
+    print("ok" if r.returncode == 0 else (r.stderr.strip() or "error"))
+    return r.returncode
+
+
+def space_focus(ws):
+    # Lock.qml parks every monitor on 2147483647 - N while locked; yabai has no
+    # such space, so those (and anything else past the space count) fold to a no-op.
+    try:
+        n = int(ws)
+    except ValueError:
+        return ["yabai", "-m", "space", "--focus", ws]
+    if n < 1 or n > 100:
+        return []
+    return ["yabai", "-m", "space", "--focus", str(n)]
+
+
+# --------------------------------------------------------------- hyprsunset
+def hyprsunset(args):
+    sunset = os.path.join(HERE, "hyprsunset")
+    if not args:
+        die("hyprsunset needs temperature|gamma|identity")
+    verb, val = args[0], (args[1] if len(args) > 1 else None)
+    if verb == "temperature":
+        argv = [sunset, "--temperature", val] if val is not None else [sunset, "--temperature"]
+    elif verb == "gamma":
+        argv = [sunset, "--gamma", val] if val is not None else [sunset, "--gamma"]
+    elif verb == "identity":
+        argv = [sunset, "--identity"]
+    else:
+        die(f"hyprsunset: unknown verb {verb}")
+    if DRY:
+        print(" ".join(argv))
+        return 0
+    r = subprocess.run(argv)
+    return r.returncode
+
+
+# ------------------------------------------------------------------- main
+def main(argv):
+    global DRY
+    as_json = False
+    batch = None
+    rest = []
+    it = iter(argv)
+    for a in it:
+        if a == "-j":
+            as_json = True
+        elif a == "--dry-run":
+            DRY = True
+        elif a == "--batch":
+            batch = next(it, "")
+        elif a in ("-h", "--help"):
+            print(__doc__.strip())
+            return 0
+        elif a.startswith("--instance") or a == "-i":
+            next(it, None)
+        else:
+            rest.append(a)
+    if batch is not None:
+        code = 0
+        for part in batch.split(";"):
+            if part.strip():
+                code |= main(part.split()) or 0
+        return code
+    if not rest:
+        print(__doc__.strip())
+        return 2
+    cmd, args = rest[0], rest[1:]
+    if cmd == "cursorpos":
+        cursorpos(as_json)
+    elif cmd == "monitors":
+        monitors(as_json)
+    elif cmd == "workspaces":
+        workspaces(as_json)
+    elif cmd == "activeworkspace":
+        activeworkspace(as_json)
+    elif cmd == "binds":
+        binds(as_json)
+    elif cmd == "devices":
+        devices(as_json)
+    elif cmd == "getoption":
+        getoption(as_json, args[0] if args else None)
+    elif cmd == "dispatch":
+        return dispatch(" ".join(args))
+    elif cmd in ("keyword", "reload"):
+        print("ok")
+    elif cmd == "hyprsunset":
+        return hyprsunset(args)
+    elif cmd == "version":
+        print(json.dumps({"branch": "macos", "commit": "", "tag": "quickshell-macos"}) if as_json else "Hyprland stand-in (quickshell-macos)")
+    else:
+        die(f"'{cmd}' is not supported on macOS", 1)
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main(sys.argv[1:]) or 0)
+    except BrokenPipeError:
+        sys.exit(0)

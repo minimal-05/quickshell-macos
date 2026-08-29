@@ -1,0 +1,161 @@
+#!/usr/bin/env python3
+"""ydotool(1) stand-in for the macOS port: CGEvent keyboard synthesis.
+
+  ydotool key [--key-delay ms] [-d ms] <evdev-code>:<1|0> ...
+  ydotool type [--key-delay ms] [-d ms] <text> ...
+  ydotool [--dry-run] ...        print the events instead of posting them
+  ydotool --help
+
+The on-screen keyboard and Cliphist send Linux evdev keycodes
+(/usr/include/linux/input-event-codes.h); they are mapped to macOS virtual
+keycodes here and posted to the HID event tap. Posting needs Accessibility for
+the process that posts, i.e. python3 (System Settings > Privacy & Security >
+Accessibility) -- without it events are silently dropped.
+
+Every ydotool call is a fresh process, but the OSK holds Shift across calls
+(press in one, letter in the next, release in a third). CGEvent modifier flags
+belong to the event, not the system, so held modifiers are remembered in a
+small state file under $XDG_RUNTIME_DIR and OR-ed into every later event until
+released.
+
+ponytail: 29 (LeftCtrl) maps to Command, because "ctrl+v" on Linux means
+"paste" and Cliphist sends 29:1 47:1 47:0 29:0 to paste; YDOTOOL_CTRL=ctrl
+keeps it as Control.
+"""
+import ctypes
+import json
+import os
+import sys
+import time
+
+RUNTIME = os.environ.get("XDG_RUNTIME_DIR") or f"/tmp/quickshell-{os.getuid()}"
+STATE = os.path.join(RUNTIME, "ydotool-mods.json")
+
+# macOS virtual keycodes (Carbon HIToolbox Events.h) keyed by evdev code.
+VK = {
+    1: 53, 2: 18, 3: 19, 4: 20, 5: 21, 6: 23, 7: 22, 8: 26, 9: 28, 10: 25, 11: 29, 12: 27, 13: 24, 14: 51,
+    15: 48, 16: 12, 17: 13, 18: 14, 19: 15, 20: 17, 21: 16, 22: 32, 23: 34, 24: 31, 25: 35, 26: 33, 27: 30, 28: 36,
+    29: 59, 30: 0, 31: 1, 32: 2, 33: 3, 34: 5, 35: 4, 36: 38, 37: 40, 38: 37, 39: 41, 40: 39, 41: 50,
+    42: 56, 43: 42, 44: 6, 45: 7, 46: 8, 47: 9, 48: 11, 49: 45, 50: 46, 51: 43, 52: 47, 53: 44, 54: 60,
+    55: 67, 56: 58, 57: 49, 58: 57, 59: 122, 60: 120, 61: 99, 62: 118, 63: 96, 64: 97, 65: 98, 66: 100, 67: 101, 68: 109,
+    69: 71, 71: 89, 72: 91, 73: 92, 74: 78, 75: 86, 76: 87, 77: 88, 78: 69, 79: 83, 80: 84, 81: 85, 82: 82, 83: 65,
+    87: 103, 88: 111, 96: 76, 97: 62, 98: 75, 100: 61, 102: 115, 103: 126, 104: 116, 105: 123, 106: 124, 107: 119,
+    108: 125, 109: 121, 110: 114, 111: 117, 113: 74, 114: 73, 115: 72, 125: 55, 126: 54, 127: 110,
+}
+# evdev code -> CGEventFlags bit for the modifiers the OSK holds.
+FLAG = {42: 1 << 17, 54: 1 << 17,            # Shift
+        29: 1 << 18, 97: 1 << 18,            # Ctrl
+        56: 1 << 19, 100: 1 << 19,           # Alt/Option
+        125: 1 << 20, 126: 1 << 20,          # Super -> Command
+        58: 1 << 16}                         # CapsLock
+CMD = 1 << 20
+if os.environ.get("YDOTOOL_CTRL", "cmd") != "ctrl":
+    VK[29] = 55       # LeftCtrl -> Command (paste shortcut)
+    FLAG[29] = CMD
+
+cg = None
+
+
+def load_cg():
+    global cg
+    cg = ctypes.CDLL("/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics")
+    cg.CGEventCreateKeyboardEvent.argtypes = [ctypes.c_void_p, ctypes.c_uint16, ctypes.c_bool]
+    cg.CGEventCreateKeyboardEvent.restype = ctypes.c_void_p
+    cg.CGEventSetFlags.argtypes = [ctypes.c_void_p, ctypes.c_uint64]
+    cg.CGEventKeyboardSetUnicodeString.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.c_void_p]
+    cg.CGEventPost.argtypes = [ctypes.c_uint32, ctypes.c_void_p]
+    cg.CFRelease.argtypes = [ctypes.c_void_p]
+
+
+def load_mods():
+    try:
+        return int(json.load(open(STATE)).get("flags", 0))
+    except (OSError, ValueError):
+        return 0
+
+
+def save_mods(flags):
+    try:
+        os.makedirs(RUNTIME, exist_ok=True)
+        json.dump({"flags": flags}, open(STATE, "w"))
+    except OSError:
+        pass
+
+
+def post(vk, down, flags, text=None, dry=False):
+    if dry:
+        print(f"{'down' if down else 'up'} vk={vk} flags={flags:#x}" + (f" text={text!r}" if text else ""))
+        return
+    ev = cg.CGEventCreateKeyboardEvent(None, vk, down)
+    if text is not None:
+        buf = text.encode("utf-16-le")
+        cg.CGEventKeyboardSetUnicodeString(ev, len(buf) // 2, buf)
+    cg.CGEventSetFlags(ev, flags)
+    cg.CGEventPost(0, ev)  # kCGHIDEventTap
+    cg.CFRelease(ev)
+
+
+def do_key(codes, delay, dry):
+    flags = load_mods()
+    for spec in codes:
+        try:
+            code, state = spec.split(":")
+            code, down = int(code), state == "1"
+        except ValueError:
+            sys.stderr.write(f"ydotool: bad key spec {spec!r}\n")
+            return 2
+        if code in FLAG:
+            flags = (flags | FLAG[code]) if down else (flags & ~FLAG[code])
+        vk = VK.get(code)
+        if vk is None:
+            continue  # releaseAllKeys() sweeps 0..248; unmapped codes are nothing here
+        post(vk, down, flags, dry=dry)
+        if delay:
+            time.sleep(delay / 1000)
+    save_mods(flags)
+    return 0
+
+
+def do_type(text, delay, dry):
+    flags = load_mods()
+    for ch in text:
+        post(0, True, flags, text=ch, dry=dry)
+        post(0, False, flags, text=ch, dry=dry)
+        if delay:
+            time.sleep(delay / 1000)
+    return 0
+
+
+def main(argv):
+    dry = False
+    delay = 0
+    rest = []
+    it = iter(argv)
+    for a in it:
+        if a == "--dry-run":
+            dry = True
+        elif a in ("--key-delay", "-d", "--next-delay", "-D"):
+            delay = int(next(it, "0") or 0)
+        elif a in ("-h", "--help"):
+            print(__doc__.strip())
+            return 0
+        elif a in ("--file", "-f"):
+            rest.append(open(next(it)).read())
+        else:
+            rest.append(a)
+    if not rest:
+        print(__doc__.strip())
+        return 2
+    if not dry:
+        load_cg()
+    verb, args = rest[0], rest[1:]
+    if verb == "key":
+        return do_key(args, delay, dry)
+    if verb == "type":
+        return do_type(" ".join(args), delay, dry)
+    sys.stderr.write(f"ydotool: '{verb}' is not supported on macOS (only key and type)\n")
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]) or 0)

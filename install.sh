@@ -16,6 +16,8 @@ brew install --quiet qt cmake ninja pkgconf
 say "Runtime dependencies"
 # What the bin/qs-* launchers shell out to.
 brew install --quiet jq media-control switchaudio-osx
+# Night Shift for the hyprsunset stand-in (bin/hyprsunset --temperature).
+brew install --quiet smudge/smudge/nightlight
 
 # matugen generates the Material palette; not in core brew.
 command -v matugen >/dev/null || \
