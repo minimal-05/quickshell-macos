@@ -117,6 +117,11 @@ void exitDaemon(int code) {
 }
 
 int main(int argc, char** argv) {
+#ifdef __APPLE__
+	// Before anything Qt: a dispatched tool replaces this process outright.
+	macos::dispatch(argc, argv);
+#endif
+
 	QCoreApplication::setApplicationName("quickshell");
 
 #if CRASH_HANDLER

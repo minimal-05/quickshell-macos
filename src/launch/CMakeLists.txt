@@ -7,6 +7,10 @@ qt_add_library(quickshell-launch STATIC
 	main.cpp
 )
 
+if (APPLE)
+	target_sources(quickshell-launch PRIVATE tools.cpp)
+endif()
+
 target_link_libraries(quickshell-launch PRIVATE
 	Qt::Quick Qt::Widgets CLI11::CLI11 quickshell-build
 )

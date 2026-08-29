@@ -1,9 +1,0 @@
-#!/bin/sh
-# One JSON line of CPU ticks, memory, swap and load for services/ResourceUsage.qml.
-# Runs the compiled helper (bin/qs-sysstats.bin, built by qs-build, gitignored)
-# and falls back to the ctypes equivalent so a fresh checkout never breaks the
-# resources widget. Field layout is documented in src/tools/qs-sysstats.c.
-# $0 is the resolved script path (shebang exec), so no subshell for dirname:
-# this runs every 3 s and a fork is most of what a shell wrapper costs.
-[ -x "${0%/*}/qs-sysstats.bin" ] && exec "${0%/*}/qs-sysstats.bin"
-exec /usr/bin/python3 "${0%/*}/../src/tools/qs-sysstats.py"
