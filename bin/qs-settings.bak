@@ -9,7 +9,7 @@ set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
-CONFIG="${QS_SETTINGS_CONFIG:-$HOME/.config/quickshell/settings.qml}"
+CONFIG="${QS_SETTINGS_CONFIG:-$ROOT/examples/end4-ii/settings.qml}"
 
 # skhd and launchd hand down a minimal PATH (launchctl getenv PATH is empty), so
 # without this the shell cannot find yabai, jq, media-control or SwitchAudioSource.
@@ -26,24 +26,16 @@ export QML2_IMPORT_PATH="$ROOT/shims${QML2_IMPORT_PATH:+:$QML2_IMPORT_PATH}"
 # the rule instead of stacking copies.
 yabai -m rule --add label=quickshell app="^quickshell$" manage=off >/dev/null 2>&1 || true
 
-# Already running? Reuse it -- closing the window only hides it, so the process
-# is usually still there and showing it again skips ~2s of QML loading. IPC first
-# (it may be hidden, which yabai cannot see), then focus.
+# Already open? Raise it rather than starting a second copy.
 #
 # Short, specific pattern on purpose: macOS pgrep -f silently truncates long
 # patterns, so a full command line here can match the wrong process.
-if pgrep -f "quickshell/settings.qml" >/dev/null 2>&1; then
-    if [ "${1:-}" = "--quit" ]; then
-        exec "$ROOT/bin/quickshell" -p "$CONFIG" ipc call settings quit
-    fi
-    "$ROOT/bin/quickshell" -p "$CONFIG" ipc call settings open >/dev/null 2>&1
+if pgrep -f "end4-ii/settings.qml" >/dev/null 2>&1; then
     yabai -m query --windows 2>/dev/null \
         | jq -r '.[] | select(.title | test("Settings")) | .id' 2>/dev/null \
         | head -1 \
         | xargs -I{} yabai -m window --focus {} 2>/dev/null
     exit 0
 fi
-
-[ "${1:-}" = "--quit" ] && exit 0
 
 exec "$ROOT/bin/quickshell" -p "$CONFIG"

@@ -208,13 +208,22 @@ Singleton {
     Timer {
         id: volumeFlush
 
+        // Repeating, because a write must not be handed to a Process that is
+        // still running the previous one -- a held key repeats faster than
+        // osascript returns, and those writes were being lost. Keep the value
+        // parked and try again next tick instead, then stop once it is out.
         interval: 40
+        repeat: true
         onTriggered: {
-            if (root.__pendingOutput >= 0) {
+            if (root.__pendingOutput < 0 && root.__pendingInput < 0) {
+                volumeFlush.stop();
+                return;
+            }
+            if (root.__pendingOutput >= 0 && !volumeSetter.running) {
                 volumeSetter.exec(["osascript", "-e", `set volume output volume ${root.__pendingOutput}`]);
                 root.__pendingOutput = -1;
             }
-            if (root.__pendingInput >= 0) {
+            if (root.__pendingInput >= 0 && !inputSetter.running) {
                 inputSetter.exec(["osascript", "-e", `set volume input volume ${root.__pendingInput}`]);
                 root.__pendingInput = -1;
             }

@@ -1,14 +1,15 @@
 #!/bin/bash
-# Switch between the three bars. They all draw in the same strip, so exactly one
+# Switch between the two bars. They draw in the same strip, so exactly one
 # should run at a time.
 #
-#   qs-switch mine         our own bar (~/.config/quickshell) — everything works
-#   qs-switch end4         end-4's illogical-impulse, adapted for macOS
+#   qs-switch end4         end-4's illogical-impulse, adapted for macOS. It is
+#                          the only quickshell config now, and it lives in
+#                          ~/.config/quickshell like every other config.
 #   qs-switch sketchybar   back to SketchyBar
 #   qs-switch status
 #
 # The skhd bindings (ctrl+alt+cmd + i/tab/space/a/s/...) drive end-4, so they
-# only do anything while `end4` is the running shell.
+# only do anything while quickshell is the running bar.
 
 set -uo pipefail
 
@@ -77,9 +78,8 @@ stop_sketchybar() {
 # yabai reserves space for whichever bar is running, and the two bars are not the
 # same height. Leaving sketchybar's reservation in place under quickshell leaves a
 # strip of desktop -- and the desktop icons sitting in it -- visible between the
-# bar and the windows below. The end-4 bar is Appearance.sizes.baseBarHeight tall
-# and draws its own rounded screen corners over the top of the windows, so windows
-# butt straight against it with no top padding of their own.
+# bar and the windows below. The end-4 bar is Appearance.sizes.baseBarHeight tall;
+# services/YabaiBarSpace.qml then pads it by SIDE_PADDING like every other edge.
 QS_BAR_HEIGHT=40
 SB_BAR_HEIGHT=46
 SB_TOP_PADDING=8
@@ -120,14 +120,9 @@ start_shell() {   # $1 = config path, $2 = label
 }
 
 case "${1:-status}" in
-    mine|qs|quickshell)
-        stop_sketchybar
-        stop_quickshell
-        set_bar_padding "$QS_BAR_HEIGHT" 0
-        float_quickshell_windows
-        start_shell "$HOME/.config/quickshell/shell.qml" "our bar" && start_bridge
-        ;;
-    end4|ii)
+    # `mine`/`qs` named the second bar, which is gone. They still land here so
+    # anything that learned those names keeps working.
+    end4|ii|qs|quickshell|mine)
         stop_sketchybar
         stop_quickshell
         # Only an initial guess for the common top-bar case, so the desktop is
@@ -135,9 +130,9 @@ case "${1:-status}" in
         # shell takes to come up. services/YabaiBarSpace.qml then takes over and
         # sets whatever the bar's actual position calls for, and keeps it in
         # step from then on -- so the two never disagree for longer than that.
-        set_bar_padding "$QS_BAR_HEIGHT" 0
+        set_bar_padding "$QS_BAR_HEIGHT" "$SIDE_PADDING"
         float_quickshell_windows
-        start_shell "$ROOT/examples/end4-ii/shell.qml" "end-4" && start_bridge
+        start_shell "$HOME/.config/quickshell/shell.qml" "end-4" && start_bridge
         ;;
     sketchybar|sb)
         stop_quickshell
@@ -149,9 +144,7 @@ case "${1:-status}" in
         ;;
     status)
         if running quickshell; then
-            ps -o command= -p "$(pgrep -x quickshell | head -1)" | grep -q "end4-ii" \
-                && echo "quickshell: running (end-4)" \
-                || echo "quickshell: running (our bar)"
+            echo "quickshell: running (end-4)"
         else
             echo "quickshell: stopped"
         fi
@@ -161,7 +154,7 @@ case "${1:-status}" in
             || echo "notification bridge: stopped"
         ;;
     *)
-        echo "usage: qs-switch [mine|end4|sketchybar|status]" >&2
+        echo "usage: qs-switch [end4|sketchybar|status]" >&2
         exit 2
         ;;
 esac

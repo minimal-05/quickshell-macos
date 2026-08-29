@@ -3,6 +3,12 @@
 #import <AppKit/AppKit.h>
 #import <QuartzCore/QuartzCore.h>
 
+#include <sys/sysctl.h>
+
+#include <cstring>
+#include <vector>
+
+#include <qelapsedtimer.h>
 #include <qhash.h>
 #include <qtypes.h>
 #include <qwindowdefs.h>
@@ -19,6 +25,13 @@ struct PanelConfig {
 QHash<WId, PanelConfig>& panelConfigs() {
 	static QHash<WId, PanelConfig> configs;
 	return configs;
+}
+
+/// Whether panels are currently held inert because a screen capture owns the
+/// screen. See syncCaptureInertness.
+bool& captureInert() {
+	static auto inert = false;
+	return inert;
 }
 
 NSView* viewFor(WId view) { return view == 0 ? nil : reinterpret_cast<NSView*>(view); }
@@ -40,14 +53,22 @@ void applyConfig(WId view, const PanelConfig& config) {
 	auto* window = windowFor(view);
 	if (window == nil) return;
 
-	window.level = levelFor(config.layer);
+	// The costly writes below are skipped when they would change nothing. This
+	// runs for every panel on every application activation change, and opening
+	// the overlay activates the shell and closing it deactivates it -- so the
+	// common case is a dozen panels reconfigured to exactly what they already
+	// were. Reading a property is free; assigning level reorders the window
+	// server's list and assigning styleMask rebuilds the window's frame view.
+	auto level = levelFor(config.layer);
+	if (window.level != level) window.level = level;
 
 	// Sticky across spaces, unmoved by Mission Control, skipped by cmd-tab, and
 	// allowed over other applications' full screen spaces.
-	window.collectionBehavior = NSWindowCollectionBehaviorCanJoinAllSpaces
-	                          | NSWindowCollectionBehaviorStationary
-	                          | NSWindowCollectionBehaviorIgnoresCycle
-	                          | NSWindowCollectionBehaviorFullScreenAuxiliary;
+	auto behavior = NSWindowCollectionBehaviorCanJoinAllSpaces
+	              | NSWindowCollectionBehaviorStationary
+	              | NSWindowCollectionBehaviorIgnoresCycle
+	              | NSWindowCollectionBehaviorFullScreenAuxiliary;
+	if (window.collectionBehavior != behavior) window.collectionBehavior = behavior;
 
 	window.opaque = NO;
 	window.backgroundColor = NSColor.clearColor;
@@ -64,10 +85,12 @@ void applyConfig(WId view, const PanelConfig& config) {
 	// several times a second for as long as the pointer rests on the module.
 	// Taking moved events directly makes hover independent of focus entirely.
 	window.acceptsMouseMovedEvents = YES;
-	NSLog(@"[qs] cfg frame=%@ lvl=%ld a=%.2f vis=%d onscreen=%d style=0x%lx opaque=%d",
-	      NSStringFromRect(window.frame), (long) window.level, window.alphaValue,
-	      (int) window.isVisible, (int) window.occlusionState, (unsigned long) window.styleMask,
-	      (int) window.isOpaque);
+
+	// Nothing below reaches a panel while a screenshot is being composed. The
+	// tracking area installed further down is NSTrackingActiveAlways, so real
+	// pointer movement is delivered to it whatever is in front of the panel --
+	// taking the window out of AppKit's hit-testing is what actually stops it.
+	window.ignoresMouseEvents = captureInert();
 
 	// acceptsMouseMovedEvents alone is not enough. Qt installs its own tracking
 	// area with NSTrackingActiveInActiveApp, so hover only works once something
@@ -118,7 +141,7 @@ void applyConfig(WId view, const PanelConfig& config) {
 	// becomesKeyOnlyIfNeeded does not cover this: it governs clicks, not a
 	// programmatic focus request. Panels that do want keys (the overview's search
 	// field, the sidebars) set keyboardFocus and are left alone.
-	if (!config.focusable) {
+	if (!config.focusable && window.styleMask != NSWindowStyleMaskBorderless) {
 		window.styleMask = NSWindowStyleMaskBorderless;
 	}
 }
@@ -329,9 +352,35 @@ void applyUndecoratedChrome(WId view) {
 	window.titleVisibility = NSWindowTitleHidden;
 	window.styleMask |= NSWindowStyleMaskFullSizeContentView;
 
-	// Dragging normally happens by the titlebar, which is now invisible, so let
-	// the window be dragged by its background instead.
-	window.movableByWindowBackground = YES;
+	// NOT movableByWindowBackground. AppKit decides on mouse-down, before Qt
+	// ever sees the event, that a drag in the "background" moves the window --
+	// and it considers Qt's content view background. That silently ate every
+	// drag gesture inside the window: dragging a file out of the file manager
+	// moved the window instead of starting a drag, and the window wandered off
+	// on any stray click-drag. Moving a window is the window manager's job here
+	// (yabai, with a modifier held), which is also what a user expects when they
+	// are not holding that modifier.
+	window.movableByWindowBackground = NO;
+
+	// Put it back on screen if it is not. This window has no titlebar and is
+	// deliberately not movable by its background, so there is nothing to drag it
+	// by: one that comes up outside the visible frame -- a remembered position
+	// from a display that is gone, a size that no longer fits -- stays there for
+	// good, which is exactly how the settings window ended up unreachable. Only
+	// the origin moves, and only when it is actually out of bounds.
+	if (auto* screen = window.screen ?: NSScreen.mainScreen; screen != nil) {
+		auto visible = screen.visibleFrame;
+		auto frame = window.frame;
+
+		// fmin before fmax, so a window wider or taller than the screen lands at
+		// the top left corner rather than being pushed off the other edge.
+		auto x = fmax(NSMinX(visible), fmin(frame.origin.x, NSMaxX(visible) - frame.size.width));
+		auto y = fmax(NSMinY(visible), fmin(frame.origin.y, NSMaxY(visible) - frame.size.height));
+
+		if (x != frame.origin.x || y != frame.origin.y) {
+			[window setFrameOrigin:NSMakePoint(x, y)];
+		}
+	}
 
 	for (NSNumber* button in @[
 		     @(NSWindowCloseButton),
@@ -342,6 +391,67 @@ void applyUndecoratedChrome(WId view) {
 		[window standardWindowButton:static_cast<NSWindowButton>(button.unsignedIntegerValue)]
 		    .hidden = YES;
 	}
+}
+
+void applyPopupChrome(WId view) {
+	auto* window = windowFor(view);
+	if (window == nil) return;
+
+	window.opaque = NO;
+	window.backgroundColor = NSColor.clearColor;
+	window.hasShadow = NO;
+
+	// Qt backs a popup with a QNSPanel but leaves out the one bit that lets a
+	// panel take a click without its application activating first. A shell is an
+	// accessory that never activates, so a press on a dock window preview went
+	// nowhere at all -- hover worked, because the pointer poller feeds Qt moves
+	// directly, but clicking did nothing. registerPanel() sets the same bit on
+	// panels, which is why their buttons have always been clickable.
+	if ([window isKindOfClass:[NSPanel class]]) {
+		auto* panel = static_cast<NSPanel*>(window);
+		panel.styleMask |= NSWindowStyleMaskNonactivatingPanel;
+
+		// An NSPanel hides itself when its application deactivates. This one's
+		// application is never active in the first place.
+		panel.hidesOnDeactivate = NO;
+	}
+
+	window.acceptsMouseMovedEvents = YES;
+}
+
+namespace {
+/// The application that was frontmost when a focusable panel took focus, so it
+/// can be handed back on close. Stored as a pid to avoid holding a strong
+/// reference to another process's NSRunningApplication.
+pid_t& previousFrontmostPid() {
+	static pid_t pid = 0;
+	return pid;
+}
+} // namespace
+
+void focusPanel(WId view) {
+	auto* window = windowFor(view);
+	if (window == nil) return;
+	if (![window canBecomeKeyWindow]) return;
+
+	auto* frontmost = [[NSWorkspace sharedWorkspace] frontmostApplication];
+	if (frontmost != nil && frontmost.processIdentifier != getpid()) {
+		previousFrontmostPid() = frontmost.processIdentifier;
+	}
+
+	[NSApp activateIgnoringOtherApps:YES];
+	[window makeKeyWindow];
+}
+
+void unfocusPanel() {
+	auto pid = previousFrontmostPid();
+	if (pid == 0) return;
+	previousFrontmostPid() = 0;
+
+	// Give the keyboard back, or closing the launcher leaves the user typing
+	// into a shell with nothing focused.
+	auto* app = [NSRunningApplication runningApplicationWithProcessIdentifier:pid];
+	if (app != nil) [app activateWithOptions:0];
 }
 
 void unregisterPanel(WId view) { panelConfigs().remove(view); }
@@ -377,5 +487,112 @@ qreal screenTopSafeAreaInset(WId view) {
 
 	return screen.safeAreaInsets.top;
 }
+
+
+namespace {
+
+/// Two pollers ask this twenty times a second each, and the answer cannot change
+/// faster than a person can hit a hotkey.
+constexpr auto CAPTURE_CACHE_MS = 250;
+
+/// True if @p pid was started to wait on the user rather than to take a shot and
+/// exit.
+///
+/// Read from the argument vector, not from how long the process has been alive.
+/// The shell takes non-interactive shots of its own -- `screencapture -x -o
+/// -l<id>` per window for the dock's previews -- and blanking hover during one
+/// would kill the preview that hover just opened. Measured here, a window shot
+/// takes 130ms and a full screen one 240ms, so no lifetime threshold separates
+/// the two cases with any margin. The flags do, exactly.
+bool captureWaitsOnUser(pid_t pid) {
+	int mib[] = {CTL_KERN, KERN_PROCARGS2, pid};
+
+	auto size = size_t(0);
+	if (sysctl(mib, 3, nullptr, &size, nullptr, 0) != 0) return false;
+
+	auto buf = std::vector<char>(size);
+	if (sysctl(mib, 3, buf.data(), &size, nullptr, 0) != 0) return false;
+	if (size < sizeof(int)) return false;
+
+	// The block is argc, then the executable path, then NUL padding, then argc
+	// NUL-terminated arguments.
+	auto argc = 0;
+	memcpy(&argc, buf.data(), sizeof(argc));
+
+	auto* arg = buf.data() + sizeof(argc);
+	const auto* end = buf.data() + size;
+
+	while (arg < end && *arg != '\0') arg++;
+	while (arg < end && *arg == '\0') arg++;
+
+	for (auto i = 0; i < argc && arg < end; i++) {
+		auto* next = arg;
+		while (next < end && *next != '\0') next++;
+		if (next >= end) break;
+
+		// screencapture bundles its flags: the screenshot hotkeys run `-pdi` and
+		// `-pdiU`, while every shot the shell takes for itself is some combination
+		// of -x, -o, -t, -R and -l, with no i in any of them.
+		if (*arg == '-' && strchr(arg, 'i') != nullptr) return true;
+
+		arg = next + 1;
+	}
+
+	return false;
+}
+
+bool anyInteractiveCapture() {
+	int mib[] = {CTL_KERN, KERN_PROC, KERN_PROC_ALL, 0};
+
+	auto size = size_t(0);
+	if (sysctl(mib, 4, nullptr, &size, nullptr, 0) != 0) return false;
+
+	// Processes can start between sizing the table and reading it, so ask for
+	// room to spare rather than failing the whole poll with ENOMEM.
+	size += size / 8;
+	auto buf = std::vector<char>(size);
+	if (sysctl(mib, 4, buf.data(), &size, nullptr, 0) != 0) return false;
+
+	auto* procs = reinterpret_cast<kinfo_proc*>(buf.data());
+	for (auto i = size_t(0); i < size / sizeof(kinfo_proc); i++) {
+		auto& proc = procs[i].kp_proc;
+
+		// Exactly equal, not a prefix. The screenshot hotkey starts screencaptureui
+		// alongside screencapture, and that agent outlives the capture: cancelling
+		// cmd-shift-4 with escape leaves it running long after the crosshair is gone.
+		// A prefix match would go on seeing it and leave the whole shell unhoverable
+		// for as long as it lingers.
+		if (strcmp(proc.p_comm, "screencapture") != 0) continue;
+
+		if (captureWaitsOnUser(proc.p_pid)) return true;
+	}
+
+	return false;
+}
+
+} // namespace
+
+bool syncCaptureInertness() {
+	auto capturing = interactiveScreenCaptureActive();
+	if (capturing == captureInert()) return capturing;
+
+	captureInert() = capturing;
+	reapplyPanels();
+
+	return capturing;
+}
+
+bool interactiveScreenCaptureActive() {
+	static auto cached = false;
+	static auto age = QElapsedTimer();
+
+	if (age.isValid() && age.elapsed() < CAPTURE_CACHE_MS) return cached;
+
+	cached = anyInteractiveCapture();
+	age.start();
+
+	return cached;
+}
+
 
 } // namespace qs::cocoa
