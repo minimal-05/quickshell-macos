@@ -21,6 +21,13 @@ import Quickshell.Io
 // /usr/bin/perl load the adapter framework, which can break on any macOS point
 // release. When it does, `players` simply goes empty - consumers see "no
 // player", which is a state every MPRIS config already handles.
+//
+// LIFETIME: the stream runs under a tiny sh wrapper whose only job is to take
+// the adapter down with the shell. The adapter only writes on a now-playing
+// change, so a dead shell's closed stdout pipe went unnoticed for hours and
+// the audit found 16 orphaned perl interpreters at ~10 MB each. The wrapper
+// holds the shell's stdin pipe open instead: the kernel closes it the moment
+// the shell dies, however it dies, and `cat` seeing EOF is the kill signal.
 Singleton {
     id: root
 
@@ -44,6 +51,12 @@ Singleton {
 
     property string __trackKey: ""
 
+    // bundle id -> display name. Each bundle costs one `lsappinfo` for the
+    // shell's lifetime; a miss (app not running, which the now-playing app
+    // rarely is) is cached too, as the heuristic name, so it is never retried
+    // per frame.
+    property var __names: ({})
+
     function __present(present: bool): void {
         const listed = root.__players.length > 0;
         if (present === listed)
@@ -59,6 +72,7 @@ Singleton {
         return Math.abs(h);
     }
 
+    // Fallback for a bundle LaunchServices cannot name (not running).
     function __identityFor(bundleId: string): string {
         if (bundleId.startsWith("com.spotify"))
             return "Spotify";
@@ -78,6 +92,19 @@ Singleton {
         // com.example.SomeApp -> SomeApp
         const parts = bundleId.split(".");
         return parts[parts.length - 1];
+    }
+
+    function __lookupName(bundleId: string): void {
+        if (bundleId.length === 0 || bundleId in root.__names || nameProc.running)
+            return;
+        nameProc.bundle = bundleId;
+        nameProc.command = ["lsappinfo", "info", "-only", "name", bundleId];
+        nameProc.running = true;
+    }
+
+    // media-control's repeat modes: 1 off, 2 track, 3 playlist.
+    function __loopFor(mode: int): int {
+        return mode === 2 ? MprisLoopState.Track : mode === 3 ? MprisLoopState.Playlist : MprisLoopState.None;
     }
 
     // `media-control stream` opens with a priming frame of {"payload":{}}
@@ -119,6 +146,7 @@ Singleton {
         const album = p.album ?? "";
         const artist = p.artist ?? "";
         const bundleId = p.bundleIdentifier ?? "";
+        const playing = p.playing === true;
         // Deliberately NOT media-control's `contentItemIdentifier`: Spotify
         // mints a fresh one on every play/pause frame, which would fire a
         // bogus trackChanged (and animate a track transition) each time the
@@ -137,8 +165,9 @@ Singleton {
             player.trackChanged();
         }
 
+        root.__lookupName(bundleId);
         player.bundleId = bundleId;
-        player.identity = root.__identityFor(bundleId);
+        player.identity = root.__names[bundleId] ?? root.__identityFor(bundleId);
         player.desktopEntry = bundleId;
         player.dbusName = "org.mpris.MediaPlayer2." + root.__identityFor(bundleId).toLowerCase().replace(/[^a-z0-9]/g, "");
 
@@ -150,18 +179,58 @@ Singleton {
         // artworkFetch below. Keep whatever is already on screen until the new
         // file lands, so changing track does not blank the image for a moment.
         player.uniqueId = root.__hash(key);
-        player.metadata = {
+
+        // A key is only in the frame when MediaRemote knows the value, and
+        // that is exactly when a control for it would tell the truth: Music
+        // and Podcasts publish repeat/shuffle, Spotify and browsers do not.
+        // A key that is present is mirrored into metadata under an mpris:x-
+        // name so consumers (and tests/_probe_mpris.qml) can see why a
+        // control is offered.
+        const hasRepeat = typeof p.repeatMode === "number";
+        const hasShuffle = typeof p.shuffleMode === "number";
+        const hasRate = typeof p.playbackRate === "number";
+        player.__setLoop(hasRepeat ? root.__loopFor(p.repeatMode) : MprisLoopState.None, hasRepeat);
+        // shuffleMode: 1 off, 2 albums, 3 tracks.
+        player.__setShuffle(hasShuffle && p.shuffleMode > 1, hasShuffle);
+        // MediaRemote reports playbackRate 0 while paused; that is the state,
+        // not the speed, so a paused frame keeps the last known rate.
+        player.__setRate(hasRate && p.playbackRate > 0 ? p.playbackRate : player.rate, hasRate);
+
+        const metadata = {
             "xesam:title": title,
             "xesam:artist": artist.length > 0 ? [artist] : [],
             "xesam:album": album,
             "mpris:length": Math.round((p.duration ?? 0) * 1000000),
-            "mpris:trackid": key
+            "mpris:trackid": key,
+            "mpris:artUrl": changed ? "" : player.trackArtUrl
         };
+        if (typeof p.trackNumber === "number")
+            metadata["xesam:trackNumber"] = p.trackNumber;
+        if (p.mediaType !== undefined)
+            metadata["mpris:x-mediaType"] = p.mediaType;
+        if (hasRepeat)
+            metadata["mpris:x-repeatMode"] = p.repeatMode;
+        if (hasShuffle)
+            metadata["mpris:x-shuffleMode"] = p.shuffleMode;
+        if (hasRate)
+            metadata["mpris:x-playbackRate"] = p.playbackRate;
+        player.metadata = metadata;
 
         player.length = p.duration ?? 0;
-        player.__rebase(p.elapsedTime ?? 0);
-        player.__setPosition(p.elapsedTime ?? 0);
-        player.__setState(p.playing === true ? MprisPlaybackState.Playing : MprisPlaybackState.Paused);
+
+        // elapsedTime is the position as of `timestamp` (the last transport
+        // event), not as of this frame, so a frame that arrives late -- or a
+        // startup `get` against a session that has been playing for minutes --
+        // is rebased to now before it becomes the interpolation origin.
+        let elapsed = p.elapsedTime ?? 0;
+        const stamp = typeof p.timestamp === "string" ? Date.parse(p.timestamp) : NaN;
+        if (playing && !isNaN(stamp))
+            elapsed += Math.max(0, (Date.now() - stamp) / 1000) * player.rate;
+        if (player.length > 0)
+            elapsed = Math.min(elapsed, player.length);
+        player.__rebase(elapsed);
+        player.__setPosition(elapsed);
+        player.__setState(playing ? MprisPlaybackState.Playing : MprisPlaybackState.Paused);
 
         if (changed) {
             player.postTrackChanged();
@@ -216,13 +285,37 @@ Singleton {
                     return;
 
                 const player = root.players.values[0] ?? null;
-                if (player !== null)
+                if (player !== null) {
                     player.trackArtUrl = "file://" + path;
+                    player.metadata = Object.assign({}, player.metadata, {
+                        "mpris:artUrl": player.trackArtUrl
+                    });
+                }
             }
         }
     }
 
     // ---- processes -------------------------------------------------------
+
+    // Deliberately backslash-free: a JS template literal, where a stray escape
+    // would be eaten before sh saw it. fd 3 is the shell's stdin pipe, which
+    // background jobs would otherwise get as /dev/null. Three ways out, none
+    // of which leaves a process behind:
+    //   - the shell dies (kill -9 included): the pipe closes, cat sees EOF,
+    //     the sentinel kills the stream, `wait` returns;
+    //   - the stream dies on its own: `wait` returns, the sentinel is told to
+    //     kill its cat, the wrapper exits and Quickshell restarts it;
+    //   - Quickshell stops the Process (reload): SIGTERM, the trap kills both.
+    // A `kill -0 $QS_PID; sleep 5` loop would do the same with a spawn every
+    // 5 s; this does it with none.
+    readonly property string __streamScript: `
+exec 3<&0
+media-control stream --no-diff --no-artwork --debounce=250 & STREAM=$!
+( trap 'kill $CAT 2>/dev/null; exit' TERM; cat <&3 >/dev/null & CAT=$!; wait $CAT; kill $STREAM 2>/dev/null ) & SENTINEL=$!
+trap 'kill $STREAM $SENTINEL 2>/dev/null; exit 143' TERM INT HUP
+wait $STREAM
+kill $SENTINEL 2>/dev/null
+`
 
     // Long-lived: one JSON object per line. Artwork is stripped because it
     // dwarfs the rest of the payload and this shim cannot surface it anyway.
@@ -230,12 +323,16 @@ Singleton {
         id: stream
 
         running: true
-        command: ["media-control", "stream", "--no-diff", "--no-artwork", "--debounce=250"]
+        // The wrapper's sentinel reads this pipe; closed, it would kill the
+        // stream on the spot.
+        stdinEnabled: true
+        command: ["sh", "-c", root.__streamScript]
 
         stdout: SplitParser {
             onRead: line => {
                 if (!line.trim().startsWith("{"))
                     return;
+                root.__restartMs = 3000;
                 try {
                     root.__apply(JSON.parse(line), true);
                 } catch (e) {
@@ -244,13 +341,20 @@ Singleton {
             }
         }
 
-        onExited: streamRestart.start()
+        onExited: {
+            streamRestart.start();
+            // A stream that dies before producing a frame (media-control broken
+            // by a macOS update) must not be respawned every 3 s forever.
+            root.__restartMs = Math.min(root.__restartMs * 2, 60000);
+        }
     }
+
+    property int __restartMs: 3000
 
     Timer {
         id: streamRestart
 
-        interval: 3000
+        interval: root.__restartMs
         onTriggered: {
             // A fresh stream sends its own priming frame.
             root.__streamPrimed = false;
@@ -268,10 +372,31 @@ Singleton {
             onStreamFinished: {
                 try {
                     root.__apply(JSON.parse(text), false);
-                    // __apply only fetches artwork when the track changed, and
-                    // whatever is already playing at startup has not changed.
+                } catch (e) {
+                    return;
+                }
+                // __apply only fetches artwork when the track changed, and
+                // whatever is already playing at startup has not changed.
+                if (root.__players.length > 0)
                     root.__fetchArtwork();
-                } catch (e) {}
+            }
+        }
+    }
+
+    Process {
+        id: nameProc
+
+        property string bundle: ""
+
+        stdout: StdioCollector {
+            onStreamFinished: {
+                // `"LSDisplayName"="Spotify"`; empty when the app is not running.
+                const m = text.match(/"LSDisplayName"="(.+)"/);
+                const names = root.__names;
+                names[nameProc.bundle] = m ? m[1] : root.__identityFor(nameProc.bundle);
+                root.__names = names;
+                if (root.__player.bundleId === nameProc.bundle)
+                    root.__player.identity = names[nameProc.bundle];
             }
         }
     }
