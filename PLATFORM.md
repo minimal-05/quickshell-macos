@@ -125,7 +125,12 @@ type driving NSWindow level; `ToplevelManager`/`Toplevel` over yabai) ·
 `RegisterEventHotKey`; chord table `src/cocoa/shortcuts.json` overlaid by
 `~/.config/quickshell-macos/shortcuts.json`, any chord skhdrc binds is left to
 skhd; a bare-modifier hold like end-4's SUPER for `workspaceNumber` is not a
-hot key and stays IPC-only until a CGEvent tap under Input Monitoring exists)
+hot key and stays IPC-only until a CGEvent tap under Input Monitoring exists) ·
+pasteboard watch (`src/cocoa/clipboard.mm`: `Quickshell.clipboardTextChanged`
+fires for copies made in other apps, which Qt alone only notices on app
+activation, and every copy lands in the history `bin/cliphist` serves from
+`~/Library/Application Support/quickshell/cliphist`; `bin/wl-copy`/`bin/wl-paste`
+wrap `pbcopy`/`pbpaste`)
 
 **Shims (loose QML — should migrate into the binary)**
 

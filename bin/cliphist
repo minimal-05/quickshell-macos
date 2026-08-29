@@ -1,0 +1,107 @@
+#!/usr/bin/env python3
+"""cliphist(1) stand-in for the macOS port.
+
+  cliphist list                 entries, newest first, as "id<TAB>preview"
+  cliphist decode [id]          content of one entry; with no id, the id is
+                                taken from the "id<TAB>preview" line on stdin
+  cliphist delete               delete the entries named by the lines on stdin
+  cliphist delete-query <text>  delete the entries whose preview contains text
+  cliphist wipe                 delete every entry
+
+The shell records the history itself (src/cocoa/clipboard.mm notices every
+pasteboard change and appends it), so this only reads and deletes; there is no
+`store` verb and no `wl-paste --watch` pipeline. The store is
+$QS_CLIPHIST_DIR, default ~/Library/Application Support/quickshell/cliphist:
+index.tsv holds "id <TAB> sha1 <TAB> preview", oldest last, and blobs/<id> the
+content (UTF-8 text or PNG). Writers take flock() on `lock`.
+"""
+import fcntl
+import os
+import re
+import sys
+
+DIR = os.environ.get("QS_CLIPHIST_DIR") or os.path.expanduser("~/Library/Application Support/quickshell/cliphist")
+INDEX = os.path.join(DIR, "index.tsv")
+BLOBS = os.path.join(DIR, "blobs")
+
+
+def locked():
+    os.makedirs(BLOBS, exist_ok=True)
+    fd = os.open(os.path.join(DIR, "lock"), os.O_CREAT | os.O_RDWR, 0o644)
+    fcntl.flock(fd, fcntl.LOCK_EX)
+    return fd
+
+
+def read_index():
+    try:
+        with open(INDEX, encoding="utf-8", errors="replace") as f:
+            return [line.rstrip("\n").split("\t", 2) for line in f if line.strip()]
+    except OSError:
+        return []
+
+
+def write_index(rows):
+    tmp = INDEX + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.writelines("\t".join(row) + "\n" for row in rows)
+    os.replace(tmp, INDEX)
+
+
+def entry_id(text):
+    m = re.match(r"\s*(\d+)", text)
+    return m.group(1) if m else None
+
+
+def remove(rows, ids):
+    kept = []
+    for row in rows:
+        if row[0] in ids:
+            try:
+                os.remove(os.path.join(BLOBS, row[0]))
+            except OSError:
+                pass
+        else:
+            kept.append(row)
+    return kept
+
+
+def main(argv):
+    verb = argv[1] if len(argv) > 1 else "--help"
+    if verb in ("-h", "--help", "help"):
+        print(__doc__.strip())
+        return 0
+    if verb == "list":
+        for row in reversed(read_index()):
+            sys.stdout.write(f"{row[0]}\t{row[2] if len(row) > 2 else ''}\n")
+        return 0
+    if verb == "decode":
+        wanted = entry_id(argv[2]) if len(argv) > 2 else entry_id(sys.stdin.readline())
+        if wanted is None:
+            sys.stderr.write("cliphist: no entry id\n")
+            return 1
+        try:
+            with open(os.path.join(BLOBS, wanted), "rb") as f:
+                sys.stdout.buffer.write(f.read())
+        except OSError:
+            sys.stderr.write(f"cliphist: no entry {wanted}\n")
+            return 1
+        return 0
+    if verb in ("delete", "delete-query", "wipe"):
+        fd = locked()
+        rows = read_index()
+        if verb == "delete":
+            ids = {i for i in (entry_id(line) for line in sys.stdin) if i}
+        elif verb == "delete-query":
+            query = " ".join(argv[2:])
+            ids = {row[0] for row in rows if len(row) > 2 and query in row[2]}
+        else:
+            ids = {row[0] for row in rows}
+        write_index(remove(rows, ids))
+        os.close(fd)
+        return 0
+    sys.stderr.write(f"cliphist: unknown verb {verb!r}\n{__doc__.strip()}\n")
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

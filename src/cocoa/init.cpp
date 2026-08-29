@@ -10,6 +10,7 @@
 #include "appicon.hpp"
 #include "nswindow.hpp"
 #include "panel_window.hpp"
+#include "clipboard.hpp" // round2/native-input
 
 namespace {
 
@@ -53,6 +54,8 @@ class CocoaPlugin: public QsEnginePlugin {
 			    qs::cocoa::applyUndecoratedChrome(window->winId());
 		    }
 		);
+
+		qs::cocoa::startClipboardWatch(); // round2/native-input
 	}
 
 	void registerTypes() override {

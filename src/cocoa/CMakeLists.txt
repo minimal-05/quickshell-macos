@@ -6,6 +6,7 @@ qt_add_library(quickshell-cocoa STATIC
 	focusgrab.mm
 	panel_window.cpp
 	hotkeys.mm # round2/native-input
+	clipboard.mm # round2/native-input
 )
 
 qt_add_qml_module(quickshell-cocoa
