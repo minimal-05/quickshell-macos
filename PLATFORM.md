@@ -172,7 +172,7 @@ cross-platform Quickshell.
   installed system-wide.
 - All launchers share `XDG_RUNTIME_DIR=/tmp/quickshell-$UID`. If you start a
   shell with a different one, `qs ipc` cannot reach it.
-- `examples/end4-ii/` carries `// macos: ` markers where a line was disabled.
+- `~/.config/quickshell/` carries `// macos: ` markers where a line was disabled.
   Grep for that exact marker — two `WlrLayershell` lines were already commented
   out upstream and must stay that way.
 - `Quickshell.WindowManager` compiles on macOS but only speaks ext-workspace-v1,

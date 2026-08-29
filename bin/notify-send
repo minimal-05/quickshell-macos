@@ -25,7 +25,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # either shell, so try both rather than guessing.
 configs=()
 [ -n "${QS_SHELL_CONFIG:-}" ] && configs+=("$QS_SHELL_CONFIG")
-configs+=("$ROOT/examples/end4-ii/shell.qml" "$HOME/.config/quickshell/shell.qml")
+configs+=("$HOME/.config/quickshell/shell.qml")
 
 app=""
 icon=""

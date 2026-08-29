@@ -50,6 +50,7 @@ bin/qs-dev --no-build   # QML-only edits need nothing built
 - Media keys are grabbed by Karabiner and routed to `bin/qs-ipc`, which is why
   macOS never draws its own volume/brightness HUD. The OSD is signal-driven, so
   new bindings belong at the key, not at the HUD.
-- `examples/end4-ii` (end-4's illogical-impulse config, adapted) is **not**
-  committed here — it is a large third-party config with its own licence. Fetch
-  it from [end-4/dots-hyprland](https://github.com/end-4/dots-hyprland).
+- The shell config (end-4's illogical-impulse, adapted) is **not** here. It
+  lives in `~/.config/quickshell`, tracked in `darwin-dotfiles`. Upstream it is
+  [end-4/dots-hyprland](https://github.com/end-4/dots-hyprland); note that our
+  copy is flattened — `modules/bar`, not `modules/ii/bar`.

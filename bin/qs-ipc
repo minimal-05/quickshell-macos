@@ -12,7 +12,7 @@
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-CONFIG="${QS_SHELL_CONFIG:-$ROOT/examples/end4-ii/shell.qml}"
+CONFIG="${QS_SHELL_CONFIG:-$HOME/.config/quickshell/shell.qml}"
 
 # skhd and launchd hand down a minimal PATH (launchctl getenv PATH is empty), so
 # without this the shell cannot find yabai, jq, media-control or SwitchAudioSource.
