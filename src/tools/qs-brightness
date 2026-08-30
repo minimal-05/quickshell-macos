@@ -8,12 +8,18 @@
 # work, and fall back to the DisplayServices helper when it does not answer.
 #
 # The step below must match increaseBrightness/decreaseBrightness in
-# ~/.config/quickshell/services/Brightness.qml.
+# ~/.config/quickshell/<config>/services/Brightness.qml.
 
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PY="$HOME/.config/quickshell/scripts/macos/brightness.py"
+# The config: ~/.config/quickshell/<QS_CONFIG_NAME>/ where that exists, else
+# ~/.config/quickshell itself. Same resolution as qs-settings and friends -- a
+# bare path here missed the nesting and left the brightness keys with no
+# fallback when IPC did not answer.
+CFG_DIR="$HOME/.config/quickshell"
+[ -d "$CFG_DIR/${QS_CONFIG_NAME:-end4}" ] && CFG_DIR="$CFG_DIR/${QS_CONFIG_NAME:-end4}"
+PY="$CFG_DIR/scripts/macos/brightness.py"
 STEP=0.05
 
 case "${1:-}" in
