@@ -10,7 +10,20 @@ set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # The checkout: two levels up from src/tools, four from inside the bundle.
 ROOT="${HERE%/Quickshell.app/Contents/Resources/tools}"; ROOT="${ROOT%/src/tools}"
-QS="$ROOT/Quickshell.app/Contents/MacOS/quickshell"
+
+# qs-make-app's own copy of the engine inside Files.app, not the shared one in
+# Quickshell.app. macOS resolves a running process's identity (name, bundle id
+# -- everything yabai's window rules and Accessibility key off) from the bundle
+# the actual running Mach-O lives inside, walking up from its real path. Every
+# one of these standalone configs execing into Quickshell.app's own binary
+# meant every one of their windows reported that same identity, so a rule meant
+# for one (the picker, Settings) caught this one's plain windows too, and yabai
+# could not act on any of them at all: role and subrole came back empty, and
+# even a direct `yabai -m window <id> --toggle float` failed outright. This
+# script still lives inside Quickshell.app's own bundle (that is what dispatches
+# by name to it) so it cannot derive Files.app's location relative to itself;
+# it is qs-make-app's fixed install path instead.
+QS="$HOME/Applications/Files.app/Contents/MacOS/quickshell-engine"
 # The config: ~/.config/quickshell/<QS_CONFIG_NAME>/ where that directory
 # exists, else ~/.config/quickshell itself -- the flat layout darwin-dotfiles
 # keeps, and what quickshell's own "default" resolves to.
@@ -57,11 +70,12 @@ fi
 # Deliberately not `pgrep -f <config path>`: that matches *any* process whose
 # command line happens to contain the path -- an editor, a grep, the shell that
 # typed the command -- and a false positive here means the app silently refuses
-# to start. Match on the process name, which only quickshell itself can hold,
-# then confirm that specific process is running this config.
+# to start. Match on the process name -- quickshell-engine now that $QS is
+# Files.app's own copy of the binary, not the shared one -- then confirm that
+# specific process is running this config.
 finder_running() {
     local pid
-    for pid in $(pgrep -x quickshell 2>/dev/null); do
+    for pid in $(pgrep -x quickshell-engine 2>/dev/null); do
         case "$(ps -o command= -p "$pid" 2>/dev/null)" in
             *"$CONFIG"*) return 0 ;;
         esac
