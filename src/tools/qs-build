@@ -29,11 +29,16 @@ for tool in cmake ninja git python3; do
 done
 
 echo "==> configuring"
-# The Linux-only subsystems default off on Apple, so no -D flags are needed.
+# Most Linux-only subsystems default off on Apple, so no -D flags are needed
+# for them. PAM is the exception: macOS ships OpenPAM (same family as
+# FreeBSD's), so the lock screen's real password check works here too --
+# SERVICE_PAM just defaults off because the option's default follows
+# QS_LINUX_DEFAULT.
 cmake -B "$BUILD" -S "$ROOT" -G Ninja \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_PREFIX_PATH=/opt/homebrew \
-    -DDISTRIBUTOR="quickshell-macos" >/dev/null
+    -DDISTRIBUTOR="quickshell-macos" \
+    -DSERVICE_PAM=ON >/dev/null
 
 echo "==> building"
 cmake --build "$BUILD" -j"$(sysctl -n hw.ncpu)"
