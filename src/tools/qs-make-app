@@ -9,7 +9,11 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT="$(cd "$HERE/.." && pwd)"
+# The checkout, whether this ran from src/tools or from inside the bundle. A
+# plain "$HERE/.." is wrong from the bundle: it lands on Contents/Resources, and
+# the launcher below then pointed at Resources/bin/qs-finder, which does not
+# exist -- Files.app opened nothing at all. Same two strips as qs-bundle.
+ROOT="${HERE%/Quickshell.app/Contents/Resources/tools}"; ROOT="${ROOT%/src/tools}"
 APP="${1:-$HOME/Applications/Files.app}"
 
 rm -rf "$APP"
