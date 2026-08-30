@@ -1,10 +1,18 @@
 #!/bin/bash
-# Generate ~/Applications/Files.app, the Spotlight-launchable wrapper around
-# bin/qs-finder.
+# Generate the Spotlight-launchable wrappers around the standalone quickshell
+# apps: ~/Applications/Files.app (bin/qs-finder) and ~/Applications/Settings.app
+# (bin/qs-settings).
 #
-# The bundle is generated rather than committed because its launcher has to name
-# this repo by absolute path -- same reason karabiner.json and skhdrc do. Moving
-# the repo means running this again.
+#   qs-make-app             build both
+#   qs-make-app Settings    build one
+#
+# The bundles are generated rather than committed because their launchers have to
+# name this repo by absolute path -- same reason karabiner.json and skhdrc do.
+# Moving the repo means running this again.
+#
+# They also exist for the dock: yabai reports both apps as "quickshell", so the
+# dock cannot tell one from the other and pins them by name instead. The pin
+# needs an app with that name and an icon, which is this.
 
 set -euo pipefail
 
@@ -14,21 +22,29 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # the launcher below then pointed at Resources/bin/qs-finder, which does not
 # exist -- Files.app opened nothing at all. Same two strips as qs-bundle.
 ROOT="${HERE%/Quickshell.app/Contents/Resources/tools}"; ROOT="${ROOT%/src/tools}"
-APP="${1:-$HOME/Applications/Files.app}"
 
-rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+# name      launcher      warm-start at login?
+APPS="Files:qs-finder:1
+Settings:qs-settings:0"
 
-cat > "$APP/Contents/Info.plist" <<PLIST
+make_app() {
+    local name="$1" tool="$2" warm="$3"
+    local id="org.quickshell.$(printf '%s' "$name" | tr '[:upper:]' '[:lower:]')"
+    local app="$HOME/Applications/$name.app"
+
+    rm -rf "$app"
+    mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+
+    cat > "$app/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>CFBundleName</key><string>Files</string>
-    <key>CFBundleDisplayName</key><string>Files</string>
-    <key>CFBundleIdentifier</key><string>org.quickshell.files</string>
-    <key>CFBundleExecutable</key><string>Files</string>
-    <key>CFBundleIconFile</key><string>Files</string>
+    <key>CFBundleName</key><string>$name</string>
+    <key>CFBundleDisplayName</key><string>$name</string>
+    <key>CFBundleIdentifier</key><string>$id</string>
+    <key>CFBundleExecutable</key><string>$name</string>
+    <key>CFBundleIconFile</key><string>$name</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
     <key>CFBundleShortVersionString</key><string>1.0</string>
@@ -39,53 +55,54 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-# exec, not a plain call: the bundle's process becomes quickshell, so the app
-# stays alive as long as the window does instead of exiting immediately and
-# leaving an orphan behind it.
-cat > "$APP/Contents/MacOS/Files" <<LAUNCHER
+    # exec, not a plain call: the bundle's process becomes quickshell, so the app
+    # stays alive as long as the window does instead of exiting immediately and
+    # leaving an orphan behind it.
+    cat > "$app/Contents/MacOS/$name" <<LAUNCHER
 #!/bin/bash
-exec "$ROOT/bin/qs-finder" "\$@"
+exec "$ROOT/bin/$tool" "\$@"
 LAUNCHER
-chmod +x "$APP/Contents/MacOS/Files"
+    chmod +x "$app/Contents/MacOS/$name"
 
-if [ -f "$ROOT/assets/Files.icns" ]; then
-    cp "$ROOT/assets/Files.icns" "$APP/Contents/Resources/Files.icns"
-fi
+    [ -f "$ROOT/assets/$name.icns" ] && cp "$ROOT/assets/$name.icns" "$app/Contents/Resources/$name.icns"
 
-# Ad-hoc sign the bundle. Nothing here is distributed, but an unsigned bundle is
-# a coin flip on Apple Silicon and this repo already re-signs after every copy.
-codesign -f -s - "$APP" >/dev/null 2>&1 || true
+    # Ad-hoc sign the bundle. Nothing here is distributed, but an unsigned bundle
+    # is a coin flip on Apple Silicon and this repo already re-signs after every
+    # copy.
+    codesign -f -s - "$app" >/dev/null 2>&1 || true
 
-# LaunchServices caches bundles by path; without this a regenerated app can keep
-# answering Spotlight with the previous copy's metadata.
-/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister \
-    -f "$APP" >/dev/null 2>&1 || true
-touch "$APP"
+    # LaunchServices caches bundles by path; without this a regenerated app can
+    # keep answering Spotlight with the previous copy's metadata.
+    /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister \
+        -f "$app" >/dev/null 2>&1 || true
+    touch "$app"
 
-# The launcher does not use Spotlight -- it finds apps through XDG desktop
-# entries, which qs-index-apps generates from the Applications folders. Without
-# this the app is launchable from Spotlight but invisible to the shell's own
-# search, which is the one actually bound to a key here.
-"$HERE/qs-index-apps" >/dev/null 2>&1 || true
+    echo "built $app"
+    [ "$warm" = 1 ] && make_agent "$name" "$id" "$app"
+    return 0
+}
 
 # Login agent. Opening Files means starting a Qt process, and ~1.5s of that is
 # engine and scene graph setup that cannot be optimised away -- so start it once
-# at login with no window, and every real open is a warm show() instead.
-AGENT="$HOME/Library/LaunchAgents/org.quickshell.files.plist"
-mkdir -p "$(dirname "$AGENT")"
-cat > "$AGENT" <<AGENTPLIST
+# at login with no window, and every real open is a warm show() instead. Settings
+# is opened rarely enough not to be worth a resident process.
+make_agent() {
+    local name="$1" id="$2" app="$3"
+    local agent="$HOME/Library/LaunchAgents/$id.plist"
+    mkdir -p "$(dirname "$agent")"
+    cat > "$agent" <<AGENTPLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>Label</key><string>org.quickshell.files</string>
+    <key>Label</key><string>$id</string>
     <key>ProgramArguments</key>
     <array>
         <string>/usr/bin/open</string>
         <string>-g</string>
         <string>-W</string>
         <string>-a</string>
-        <string>$APP</string>
+        <string>$app</string>
         <string>--args</string>
         <string>--hidden</string>
     </array>
@@ -105,8 +122,26 @@ cat > "$AGENT" <<AGENTPLIST
 </plist>
 AGENTPLIST
 
-launchctl bootout "gui/$UID/org.quickshell.files" >/dev/null 2>&1 || true
-launchctl bootstrap "gui/$UID" "$AGENT" >/dev/null 2>&1 || true
+    launchctl bootout "gui/$UID/$id" >/dev/null 2>&1 || true
+    launchctl bootstrap "gui/$UID" "$agent" >/dev/null 2>&1 || true
+    echo "login agent: $agent  (remove with: launchctl bootout gui/$UID/$id && rm '$agent')"
+}
 
-echo "built $APP"
-echo "login agent: $AGENT  (remove with: launchctl bootout gui/$UID/org.quickshell.files && rm '$AGENT')"
+want="${1:-}"
+built=0
+while IFS=: read -r name tool warm; do
+    [ -n "$want" ] && [ "$want" != "$name" ] && continue
+    make_app "$name" "$tool" "$warm"
+    built=$((built + 1))
+done <<< "$APPS"
+
+if [ "$built" = 0 ]; then
+    echo "qs-make-app: no such app '$want' (have: Files, Settings)" >&2
+    exit 1
+fi
+
+# The launcher does not use Spotlight -- it finds apps through XDG desktop
+# entries, which qs-index-apps generates from the Applications folders. Without
+# this the apps are launchable from Spotlight but invisible to the shell's own
+# search, which is the one actually bound to a key here.
+"$HERE/qs-index-apps" >/dev/null 2>&1 || true
