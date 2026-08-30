@@ -37,7 +37,27 @@ APP="$ROOT/Quickshell.app"
 EXE="$APP/Contents/MacOS/quickshell"
 TOOLS="$APP/Contents/Resources/tools"
 SRC="${1:-$EXE}"
-IDENTITY="${QS_CODESIGN_IDENTITY:--}"
+# TCC records a grant against the program's designated requirement. Ad-hoc
+# signing gives it no stable one -- the requirement pins the cdhash, which every
+# rebuild changes -- so Screen Recording and Accessibility have to be granted
+# again after each build, and a grant that is still listed as allowed silently
+# stops matching. Signing with a certificate anchors the requirement on that
+# certificate instead, and the grant survives rebuilds.
+#
+# Preference: whatever QS_CODESIGN_IDENTITY names, else the first real code
+# signing identity in the keychain, else ad-hoc with a warning.
+if [ -n "${QS_CODESIGN_IDENTITY:-}" ]; then
+    IDENTITY="$QS_CODESIGN_IDENTITY"
+else
+    IDENTITY="$(security find-identity -v -p codesigning 2>/dev/null |
+                sed -n 's/^ *[0-9]*) [0-9A-F]* "\(.*\)"$/\1/p' | head -1)"
+    if [ -z "$IDENTITY" ]; then
+        IDENTITY=-
+        echo "qs-bundle: no signing identity; ad-hoc signing means every rebuild" >&2
+        echo "           drops the Screen Recording and Accessibility grants." >&2
+        echo "           See \"TCC identity\" in PLATFORM.md." >&2
+    fi
+fi
 
 [ -f "$SRC" ] || { echo "qs-bundle: no such file: $SRC" >&2; exit 1; }
 
