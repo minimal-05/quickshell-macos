@@ -227,6 +227,18 @@ class CocoaPlugin: public QsEnginePlugin {
 		);
 
 		qs::cocoa::startClipboardWatch(); // round2/native-input
+
+		// registerPanel() strips this too, but only for a process that owns a
+		// panel -- deliberately not every regular-app config, per the comment
+		// above init(): settings and welcome are one window each, and Cmd+Q
+		// meaning "close it" is unambiguous for them. It stops being
+		// unambiguous the moment a config can have more than one window open
+		// at once: native Cmd+Q asks every top-level window to close, not just
+		// the front one, which is "closing one Files window closes all of
+		// them" from the user's side. QS_MULTI_WINDOW_APP opts a config in
+		// without touching the single-window ones; qs-finder sets it because
+		// Files is the one config built around Cmd+N.
+		if (qEnvironmentVariableIsSet("QS_MULTI_WINDOW_APP")) qs::cocoa::stripQuitKeyEquivalent();
 	}
 
 	void registerTypes() override {

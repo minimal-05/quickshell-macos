@@ -18,6 +18,15 @@ CFG_DIR="$HOME/.config/quickshell"
 [ -d "$CFG_DIR/${QS_CONFIG_NAME:-end4}" ] && CFG_DIR="$CFG_DIR/${QS_CONFIG_NAME:-end4}"
 CONFIG="${QS_FINDER_CONFIG:-$CFG_DIR/finder.qml}"
 
+# Files can have more than one window open (Cmd+N). Native Cmd+Q asks every
+# top-level window to close, not just the one in front, which reads as
+# "closing one Files window closes all of them" -- correct for the
+# single-window configs (settings, welcome) but not this one. Read by
+# CocoaPlugin::init() in src/cocoa/init.cpp, which strips Cmd+Q's key
+# equivalent when this is set; Cmd+W (already wired per-window) is the only
+# way to close a window either way.
+export QS_MULTI_WINDOW_APP=1
+
 # --hidden: start the process without showing a window. The login agent uses this
 # so that the first time you actually open Files, the process is already warm --
 # a cold start spends ~1.5s in Qt engine and scene graph setup no matter what.
@@ -80,22 +89,63 @@ if finder_running; then
     exit 0
 fi
 
-[ "$START_HIDDEN" = "1" ] && export QS_FINDER_START_HIDDEN=1
+# Nothing was running a moment ago. Two invocations of this script can both
+# reach this exact point before either one's process has registered with
+# pgrep -- clicking the wallpaper picker button twice in quick succession did
+# exactly that, and each copy independently decided "nothing is running yet,
+# I will start one," opening two windows. A bare mkdir is atomic across
+# processes sharing a filesystem, so only one caller can ever win it; every
+# other caller waits for the winner's process to come up and joins it through
+# the ordinary present() path instead of launching a second one of its own.
+RUNTIME="${XDG_RUNTIME_DIR:-/tmp/quickshell-$UID}"
+LOCK="$RUNTIME/quickshell-finder-launch.lock"
+mkdir -p "$RUNTIME" 2>/dev/null
 
-# Picking needs a message delivered *after* the window exists, so this is the one
-# path that cannot just exec: start the app, then keep offering the message until
-# the IPC socket answers. A cold start is ~1.5s of Qt setup.
-# ponytail: a poll, because quickshell has nothing to wait on. The login agent
-# primes the process at boot, so the warm path above is the usual one.
-if [ -n "$PICK_MODE" ]; then
-    # Hidden, so the pick lands in the warm window rather than beside a plain
-    # one nobody asked for.
-    QS_FINDER_START_HIDDEN=1 "$QS" -p "$CONFIG" &
-    for _ in $(seq 1 40); do
-        sleep 0.25
-        present && exit 0
-    done
-    exit 1
+# A lock left behind by a launch that crashed or was killed before it could
+# clean up after itself would otherwise wedge every future launch shut
+# forever. Nothing this script does should take anywhere near this long, so
+# a lock this old is abandoned, not held.
+if [ -d "$LOCK" ]; then
+    age=$(( $(date +%s) - $(stat -f %m "$LOCK" 2>/dev/null || echo 0) ))
+    [ "$age" -gt 15 ] && rmdir "$LOCK" 2>/dev/null
 fi
 
-exec "$QS" -p "$CONFIG"
+if mkdir "$LOCK" 2>/dev/null; then
+    [ "$START_HIDDEN" = "1" ] && export QS_FINDER_START_HIDDEN=1
+
+    # Picking needs a message delivered *after* the window exists, so this is
+    # the one path that cannot just exec: start the app, then keep offering
+    # the message until the IPC socket answers. A cold start is ~1.5s of Qt
+    # setup.
+    # ponytail: a poll, because quickshell has nothing to wait on. The login
+    # agent primes the process at boot, so the warm path above is the usual one.
+    if [ -n "$PICK_MODE" ]; then
+        # Hidden, so the pick lands in the warm window rather than beside a
+        # plain one nobody asked for.
+        QS_FINDER_START_HIDDEN=1 "$QS" -p "$CONFIG" &
+        for _ in $(seq 1 40); do
+            sleep 0.25
+            if present; then
+                rmdir "$LOCK" 2>/dev/null
+                exit 0
+            fi
+        done
+        rmdir "$LOCK" 2>/dev/null
+        exit 1
+    fi
+
+    rmdir "$LOCK" 2>/dev/null
+    exec "$QS" -p "$CONFIG"
+fi
+
+# Someone else holds the lock and is already launching. Wait for their process
+# to actually exist, then reach it the normal warm way.
+for _ in $(seq 1 40); do
+    if finder_running; then
+        present
+        exit 0
+    fi
+    sleep 0.25
+done
+echo "qs-finder: timed out waiting for another launch to finish" >&2
+exit 1
