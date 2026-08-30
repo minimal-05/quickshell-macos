@@ -6,7 +6,9 @@
 #include <qtclasshelpermacros.h>
 #include <qthread.h>
 #include <qtmetamacros.h>
-#ifdef __FreeBSD__
+#if defined(__FreeBSD__) || defined(__APPLE__)
+// OpenPAM (both platforms) exposes these as security/pam_types.h; Linux-PAM's
+// public header is security/_pam_types.h.
 #include <security/pam_types.h>
 #else
 #include <security/_pam_types.h>

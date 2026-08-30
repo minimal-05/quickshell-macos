@@ -1,21 +1,19 @@
 // Quickshell.Wayland shim for macOS — WlSessionLockSurface
 //
-// FULLY INERT, but structurally honest: it is an Item, so children declared
-// inside it (upstream's `data` default property) parent correctly and any
-// anchors/size bindings in a consumer config resolve instead of throwing.
-// It is never shown, because WlSessionLock never instantiates it — see the
-// comment there for why session locking cannot be shimmed on macOS.
+// REAL now that WlSessionLock instantiates it (see the comment there): a
+// plain Item, resized to fill the PanelWindow it's loaded into (Loader gives
+// a loaded item its own size when the Loader itself has an explicit size),
+// hosting whatever a config parents into it via the default `data` property.
 //
-// `visible` is Item's own and starts false since nothing ever parents this
-// into a window. `screen` is always null. `color` is stored and unused.
 // `contentItem` returns this item, matching how consumers reparent into it.
+// `screen` is set by WlSessionLock after loading. `color` is accepted and
+// stored but not painted -- the PanelWindow underneath already sets its own
+// background.
 
 import QtQuick
 
 Item {
     id: root
-
-    visible: false
 
     readonly property Item contentItem: root
     property var screen: null

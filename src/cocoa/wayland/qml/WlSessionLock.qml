@@ -1,27 +1,63 @@
 // Quickshell.Wayland shim for macOS — WlSessionLock
 //
-// FULLY INERT. Upstream implements ext-session-lock-v1, whose whole point is
-// that the compositor keeps the session covered even if the locker crashes.
-// macOS has no equivalent third-party API: the login window is owned by
-// loginwindow/SecurityAgent and cannot be replaced or driven from a user
-// process. Anything drawn from here would be a picture of a lock screen with
-// the real session live behind it, so this shim refuses to pretend.
+// REAL, with a caveat. Upstream implements ext-session-lock-v1, whose whole
+// point is that the compositor keeps the session covered even if the locker
+// crashes. macOS has no compositor-level equivalent -- the login window is
+// owned by loginwindow/SecurityAgent and cannot be replaced -- so this is a
+// best-effort overlay instead: one focusable, always-on-top PanelWindow per
+// screen, hosting `surface`. If this process dies while locked, the overlay
+// dies with it and the desktop underneath is exposed -- there is no
+// compositor backstop. `secure` stays false for exactly that reason: a
+// config gating on it should correctly conclude this is not a crash-proof
+// lock.
 //
-// `locked` is a plain read/write property. It stores what you write, and
-// `secure` stays false forever, so a config that gates on `secure` will
-// correctly conclude the session is not locked. `surface` accepts the
-// component (upstream's default property) and never instantiates it.
-//
-// If you want a real macOS lock, run `pmset displaysleepnow` or the
-// SACLockScreenImmediate keychain call from a Process instead.
+// `locked` toggles the overlay on and off. `surface` is upstream's default
+// property: a Component whose root is (or wraps) WlSessionLockSurface,
+// instantiated once per Quickshell.screens entry, same as a real output.
 
 import QtQuick
+import Quickshell
+import Quickshell.Wayland
 
-QtObject {
+Scope {
     id: root
 
     default property Component surface: null
 
     property bool locked: false
     readonly property bool secure: false
+
+    Loader {
+        active: root.locked
+
+        sourceComponent: Variants {
+            model: Quickshell.screens
+
+            delegate: PanelWindow {
+                id: lockPanel
+
+                required property var modelData
+                screen: modelData
+                focusable: true
+                color: "transparent"
+                exclusionMode: ExclusionMode.Ignore
+                WlrLayershell.namespace: "quickshell:lock"
+                WlrLayershell.layer: WlrLayer.Overlay
+
+                anchors {
+                    top: true
+                    bottom: true
+                    left: true
+                    right: true
+                }
+
+                Loader {
+                    anchors.fill: parent
+                    active: true
+                    sourceComponent: root.surface
+                    onLoaded: if (item) item.screen = lockPanel.screen
+                }
+            }
+        }
+    }
 }
