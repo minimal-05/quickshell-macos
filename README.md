@@ -64,6 +64,20 @@ after `qs-dev --no-build` or `qs-bundle`, not before.
 
 ## Notes
 
+- `bin/qs` is the entry point and everything goes through it — the launchers
+  here, end-4's QML (which calls `qs` by bare name), skhd and karabiner via
+  `qs-ipc`, launchd via `qs-start`. It sets PATH, `XDG_RUNTIME_DIR` and
+  `QML2_IMPORT_PATH`, defaults `QS_CONFIG_NAME` to `end4`, and execs the binary
+  inside `Quickshell.app`. To point a launcher at another config set
+  `QS_CONFIG_NAME`, don't add a `-p`.
+- `bin/qs` is **committed**; the rest of `bin/` is generated symlinks onto it,
+  along with `Quickshell.app/`, `bin/quickshell` and `bin/menus`. Don't add the
+  generated ones, and don't gitignore `qs` — it used to be generated, which left
+  the one command everything calls absent from a fresh checkout.
+- `karabiner.json` and `skhdrc` call `bin/qs-ipc` by **absolute path** because
+  Karabiner does not expand `~`. Moving this repo means updating both;
+  darwin-dotfiles' `install.sh` rewrites them.
+
 - The binary lives in `Quickshell.app` so TCC has a stable identity to hang
   Screen Recording, Accessibility and Full Disk Access on — a bare ad-hoc binary
   is identified by its cdhash, so every grant died at the next rebuild. Set
