@@ -80,18 +80,40 @@ printf '%s\n' "$ROWS" | while IFS=$'\t' read -r db svc cl; do printf '%-7s %-24s
 echo
 echo "$(printf '%s\n' "$ROWS" | wc -l | tr -d ' ') rows"
 
-[ "$WRITE" -eq 1 ] || { echo "dry run; re-run with sudo and -w to remove them"; exit 0; }
-[ "$(id -u)" -eq 0 ] || { echo "the system database needs root: sudo $0 -w" >&2; exit 1; }
+[ "$WRITE" -eq 1 ] || { echo "dry run; add -w to remove them (sudo as well, for the system rows)"; exit 0; }
+
+# The user database belongs to the user, so half this job never needed root.
+# Only the system one -- Accessibility, Screen Recording, Input Monitoring,
+# Full Disk Access -- does, and refusing to do anything without it just leaves
+# the caller to run the whole thing as root for no reason.
+ROOT=0; [ "$(id -u)" -eq 0 ] && ROOT=1
+if [ "$ROOT" -eq 0 ] && printf '%s\n' "$ROWS" | grep -q '^system'; then
+    echo "not root: cleaning the user database only, leaving $(printf '%s\n' "$ROWS" | grep -c '^system') system rows"
+    echo "  for those: sudo $0 -w${EXTRA[0]+ -b ${EXTRA[0]}}"
+fi
 
 STAMP="$(date +%Y%m%d-%H%M%S)"
+BACKUP_DIR="$HOME/Library/Application Support/quickshell/tcc-backups"
+mkdir -p "$BACKUP_DIR"
 for db in "$SYS" "$USR"; do
-    [ -f "$db" ] && cp "$db" "${db}.backup-${STAMP}" && echo "backed up $(basename "$(dirname "$(dirname "$db")")")/TCC.db -> ${db}.backup-${STAMP}"
+    [ -f "$db" ] || continue
+    [ "$db" = "$SYS" ] && [ "$ROOT" -eq 0 ] && continue
+    tag=system; [ "$db" = "$USR" ] && tag=user
+    cp "$db" "$BACKUP_DIR/${tag}-TCC-${STAMP}.db" 2>/dev/null \
+        && echo "backed up $tag -> $BACKUP_DIR/${tag}-TCC-${STAMP}.db"
 done
 
 printf '%s\n' "$ROWS" | while IFS=$'\t' read -r db svc cl; do
+    if [ "$db" = system ] && [ "$ROOT" -eq 0 ]; then
+        echo "skipped  $svc  $cl  (needs root)"
+        continue
+    fi
     target="$SYS"; [ "$db" = user ] && target="$USR"
-    sqlite3 "$target" "delete from access where service='kTCCService${svc}' and client='${cl//\'/\'\'}'" 2>/dev/null \
-        && echo "removed  $svc  $cl"
+    if sqlite3 "$target" "delete from access where service='kTCCService${svc}' and client='${cl//\'/\'\'}'" 2>/dev/null; then
+        echo "removed  $svc  $cl"
+    else
+        echo "FAILED   $svc  $cl"
+    fi
 done
 
 # tccd caches; without this the old rows keep answering until it restarts.
