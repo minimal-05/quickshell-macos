@@ -209,6 +209,12 @@ class CocoaPlugin: public QsEnginePlugin {
 		// chrome, drawn by the config itself, so the system titlebar on top of it
 		// is duplicate furniture. Strip it once the window exists; there is no
 		// earlier hook, and re-applying is harmless.
+		//
+		// It also needs promoting off the shared bundle's LSUIElement default:
+		// see setRegularActivationPolicy. An accessory-policy window gets no
+		// normal accessibility role, so yabai could see it existed but never its
+		// title -- every dock/taskbar integration keyed on title silently failed
+		// for exactly these "ordinary window" configs.
 		QObject::connect(
 		    qGuiApp,
 		    &QGuiApplication::focusWindowChanged,
@@ -222,6 +228,7 @@ class CocoaPlugin: public QsEnginePlugin {
 			    // engine is shutting down, so both guards are load bearing.
 			    if (QCoreApplication::closingDown() || window->handle() == nullptr) return;
 
+			    qs::cocoa::setRegularActivationPolicy();
 			    qs::cocoa::applyUndecoratedChrome(window->winId());
 		    }
 		);
