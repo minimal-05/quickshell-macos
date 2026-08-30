@@ -1,0 +1,99 @@
+#!/bin/bash
+# Remove stale TCC (privacy permission) rows.
+#
+#   qs-tcc-clean            list what would be removed, change nothing
+#   sudo qs-tcc-clean -w    remove them
+#
+# macOS records a privacy grant against the program that asked for it. For an
+# app that is a bundle id; for a command-line binary it is an absolute path plus
+# a code requirement. Neither is stable here:
+#
+#   - Uninstall a tool and its rows stay for ever. Homebrew paths carry the
+#     version, so every upgrade leaves another one behind.
+#   - Rebuild an ad-hoc-signed binary and the path still matches but the code
+#     requirement does not, so the row is present and the grant does not work.
+#     That is what "could not access accessibility features" means when the
+#     checkbox already looks ticked.
+#
+# System Settings shows those rows with a generic icon and no way to tell which
+# are dead. This removes the ones whose binary is gone, and -b removes rows for
+# a binary that still exists so the next launch asks again.
+#
+# The system database needs root and is the one holding Accessibility, Screen
+# Recording, Input Monitoring and Full Disk Access. `tccutil reset` is the
+# supported route but it only takes bundle identifiers, so it cannot touch any
+# of these. Both databases are backed up first.
+#
+# ponytail: deletes rows, never adds. Granting still goes through System
+# Settings, by design -- a tool that could grant itself permissions would be a
+# nice thing for malware to find.
+
+set -uo pipefail
+
+SYS="/Library/Application Support/com.apple.TCC/TCC.db"
+USR="$HOME/Library/Application Support/com.apple.TCC/TCC.db"
+WRITE=0
+declare -a EXTRA=()
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -w|--write) WRITE=1; shift ;;
+        -b|--also) EXTRA+=("$2"); shift 2 ;;
+        -h|--help) sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        *) echo "unknown option: $1" >&2; exit 2 ;;
+    esac
+done
+
+command -v sqlite3 >/dev/null || { echo "sqlite3 not found" >&2; exit 1; }
+
+# A row is stale when its client is an absolute path with nothing at the end of
+# it. Bundle ids are left alone: an app can be reinstalled at a new location and
+# keep its identifier, so a missing bundle proves nothing.
+stale_rows() {
+    local db="$1" label="$2"
+    sqlite3 "$db" "select service || '|' || client from access where client like '/%'" 2>/dev/null |
+    while IFS='|' read -r service client; do
+        [ -e "$client" ] || printf '%s\t%s\t%s\n' "$label" "${service#kTCCService}" "$client"
+    done
+}
+
+extra_rows() {
+    local db="$1" label="$2" pat
+    for pat in "${EXTRA[@]+"${EXTRA[@]}"}"; do
+        sqlite3 "$db" "select service || '|' || client from access where client like '%${pat}%'" 2>/dev/null |
+        while IFS='|' read -r service client; do
+            printf '%s\t%s\t%s\n' "$label" "${service#kTCCService}" "$client"
+        done
+    done
+}
+
+readable() { sqlite3 "$1" "select 1 from access limit 1" >/dev/null 2>&1; }
+
+readable "$SYS" || echo "note: cannot read the system database -- grant Full Disk Access to this terminal" >&2
+
+ROWS="$( { stale_rows "$SYS" system; stale_rows "$USR" user; extra_rows "$SYS" system; extra_rows "$USR" user; } | sort -u )"
+
+if [ -z "$ROWS" ]; then echo "nothing stale"; exit 0; fi
+
+printf '%-7s %-24s %s\n' DB SERVICE CLIENT
+printf '%s\n' "$ROWS" | while IFS=$'\t' read -r db svc cl; do printf '%-7s %-24s %s\n' "$db" "$svc" "$cl"; done
+echo
+echo "$(printf '%s\n' "$ROWS" | wc -l | tr -d ' ') rows"
+
+[ "$WRITE" -eq 1 ] || { echo "dry run; re-run with sudo and -w to remove them"; exit 0; }
+[ "$(id -u)" -eq 0 ] || { echo "the system database needs root: sudo $0 -w" >&2; exit 1; }
+
+STAMP="$(date +%Y%m%d-%H%M%S)"
+for db in "$SYS" "$USR"; do
+    [ -f "$db" ] && cp "$db" "${db}.backup-${STAMP}" && echo "backed up $(basename "$(dirname "$(dirname "$db")")")/TCC.db -> ${db}.backup-${STAMP}"
+done
+
+printf '%s\n' "$ROWS" | while IFS=$'\t' read -r db svc cl; do
+    target="$SYS"; [ "$db" = user ] && target="$USR"
+    sqlite3 "$target" "delete from access where service='kTCCService${svc}' and client='${cl//\'/\'\'}'" 2>/dev/null \
+        && echo "removed  $svc  $cl"
+done
+
+# tccd caches; without this the old rows keep answering until it restarts.
+killall tccd 2>/dev/null && echo "restarted tccd"
+echo "done -- re-grant anything you still want in System Settings > Privacy & Security"
