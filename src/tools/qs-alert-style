@@ -21,6 +21,8 @@ usernoted only reads the preference at startup, hence the killall.
     qs-alert-style                     mute the low battery banner
     qs-alert-style <bundle-id>         mute that source
     qs-alert-style <bundle-id> alerts  put it back
+    qs-alert-style --all               mute every source; the bridge still shows all of them
+    qs-alert-style --all alerts        put every source back
 """
 
 import plistlib
@@ -30,7 +32,8 @@ import sys
 LOW_BATTERY = "com.apple.controlcenter.notifications.low-battery"
 STYLES = {"none": 0, "banners": 1, "alerts": 2}
 
-bundle = sys.argv[1] if len(sys.argv) > 1 else LOW_BATTERY
+all_sources = len(sys.argv) > 1 and sys.argv[1] == "--all"
+bundle = None if all_sources else (sys.argv[1] if len(sys.argv) > 1 else LOW_BATTERY)
 name = sys.argv[2] if len(sys.argv) > 2 else "none"
 
 if name not in STYLES:
@@ -44,6 +47,23 @@ prefs = plistlib.loads(
         check=True,
     ).stdout
 )
+
+if all_sources:
+    changed = 0
+    for app in prefs.get("apps", []):
+        old = app["flags"]
+        app["flags"] = (old & ~(0b11 << 3)) | (style << 3)
+        if app["flags"] != old:
+            changed += 1
+    if changed:
+        subprocess.run(
+            ["defaults", "import", "com.apple.ncprefs", "-"],
+            input=plistlib.dumps(prefs),
+            check=True,
+        )
+        subprocess.run(["killall", "usernoted"], stderr=subprocess.DEVNULL)
+    print(f"{changed} of {len(prefs.get('apps', []))} sources set to {name}")
+    sys.exit(0)
 
 for app in prefs.get("apps", []):
     if app.get("bundle-id") != bundle:
