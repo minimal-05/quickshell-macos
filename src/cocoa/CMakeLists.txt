@@ -4,7 +4,13 @@ qt_add_library(quickshell-cocoa STATIC
 	nswindow.mm
 	appicon.mm
 	focusgrab.mm
+	filewatch.cpp
 	panel_window.cpp
+	sysstats.mm # round2/native-stats-power
+	power.mm # round2/native-stats-power
+	coreaudio.mm # round2/native-audio
+	hotkeys.mm # round2/native-input
+	clipboard.mm # round2/native-input
 )
 
 qt_add_qml_module(quickshell-cocoa
@@ -19,9 +25,23 @@ add_library(quickshell-cocoa-init OBJECT init.cpp)
 
 # QuartzCore for CAMediaTimingFunction, used by the panel open/close animations.
 target_link_libraries(quickshell-cocoa PRIVATE Qt::Quick "-framework AppKit" "-framework QuartzCore")
+# CoreAudio for the device HAL, AudioToolbox for the virtual main volume selector. round2/native-audio
+target_link_libraries(quickshell-cocoa PRIVATE "-framework CoreAudio" "-framework AudioToolbox") # round2/native-audio
 target_link_libraries(quickshell-cocoa-init PRIVATE Qt::Quick Qt::Qml "-framework AppKit")
 
 target_link_libraries(quickshell PRIVATE quickshell-cocoaplugin quickshell-cocoa-init)
 
 # Quickshell.Wayland compatibility module (WlrLayershell attached type + friends).
 add_subdirectory(wayland)
+
+# IOKit for the power sources and the AppleSmartBattery registry node (power.mm).
+target_link_libraries(quickshell-cocoa PRIVATE "-framework IOKit") # round2/native-stats-power
+# round2/native-input: GlobalShortcut chords via Carbon RegisterEventHotKey, and
+# the default chord table compiled in from shortcuts.json so a fresh checkout
+# has working hotkeys before qs-install-keybinds copies that file to ~/.config.
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/shortcuts.json" QS_COCOA_SHORTCUTS_JSON)
+file(CONFIGURE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/shortcuts_json.hpp"
+	CONTENT "static const char* const DEFAULT_SHORTCUTS_JSON = R\"qsjson(@QS_COCOA_SHORTCUTS_JSON@)qsjson\";\n")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS shortcuts.json)
+target_include_directories(quickshell-cocoa PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
+target_link_libraries(quickshell-cocoa PRIVATE "-framework Carbon")

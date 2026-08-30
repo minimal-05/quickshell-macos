@@ -1,0 +1,8 @@
+#!/bin/bash
+# reboot(8) stand-in: System Events restart, via loginctl.
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Answered here: passed through, --help would be loginctl's second word and
+# `loginctl reboot --help` restarts the machine.
+case "${1:-}" in -h|--help) exec "$HERE/loginctl" --help ;; esac
+dry=(); [ "${1:-}" = "--dry-run" ] && { dry=(--dry-run); shift; }
+exec "$HERE/loginctl" "${dry[@]}" reboot "$@"

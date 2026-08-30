@@ -8,6 +8,7 @@
 #include <qscreen.h>
 #include <qtclasshelpermacros.h>
 #include <qpoint.h>
+#include <qregion.h>
 #include <qtimer.h>
 #include <qtmetamacros.h>
 #include <qtypes.h>
@@ -18,10 +19,73 @@
 #include "../window/proxywindow.hpp"
 #include "nswindow.hpp"
 
+class QQmlEngine;
+class QJSEngine;
+
 namespace qs::cocoa {
 
 class CocoaPanelStack;
 class CocoaLayershell;
+
+/// The screen space this process's panels reserve, per edge, in points.
+///
+/// On Wayland the compositor reads every layer surface's exclusive zone and
+/// keeps windows out of it. macOS reserves nothing for anyone but the menu
+/// bar and the Dock, so the shell has to tell the window manager itself. This
+/// is the sum, per edge, of `exclusiveZone` over the visible panels that are
+/// not `ExclusionMode.Ignore` -- the same figures the panels use to stack
+/// against each other -- taken per screen and published as the largest of
+/// them, because yabai's `external_bar` is one global setting.
+///
+/// With `applyToYabai` set, the backend writes `external_bar all:<top>:<bottom>`
+/// itself, debounced, whenever the totals change. `external_bar` has no left
+/// or right field, so vertical reservations are only published here for the
+/// config to fold into `left_padding`/`right_padding` together with whatever
+/// gap policy it has; padding is weaker (a zoomed window still covers it) and
+/// belongs with the config's other padding writes.
+class CocoaReservation: public QObject {
+	Q_OBJECT;
+	QML_NAMED_ELEMENT(Reservation);
+	QML_SINGLETON;
+	// clang-format off
+	Q_PROPERTY(qint32 top READ top NOTIFY changed);
+	Q_PROPERTY(qint32 bottom READ bottom NOTIFY changed);
+	Q_PROPERTY(qint32 left READ left NOTIFY changed);
+	Q_PROPERTY(qint32 right READ right NOTIFY changed);
+	/// Off by default so a throwaway instance (every probe under tests/) never
+	/// touches the desktop's window manager; the shell config turns it on.
+	Q_PROPERTY(bool applyToYabai READ applyToYabai WRITE setApplyToYabai NOTIFY applyToYabaiChanged);
+	// clang-format on
+
+public:
+	static CocoaReservation* instance();
+	static CocoaReservation* create(QQmlEngine* engine, QJSEngine* jsEngine);
+
+	[[nodiscard]] qint32 top() const { return this->mTop; }
+	[[nodiscard]] qint32 bottom() const { return this->mBottom; }
+	[[nodiscard]] qint32 left() const { return this->mLeft; }
+	[[nodiscard]] qint32 right() const { return this->mRight; }
+
+	[[nodiscard]] bool applyToYabai() const { return this->mApplyToYabai; }
+	void setApplyToYabai(bool apply);
+
+	void setTotals(qint32 top, qint32 bottom, qint32 left, qint32 right);
+
+signals:
+	void changed();
+	void applyToYabaiChanged();
+
+private:
+	explicit CocoaReservation(QObject* parent = nullptr);
+	void publish();
+
+	qint32 mTop = 0;
+	qint32 mBottom = 0;
+	qint32 mLeft = 0;
+	qint32 mRight = 0;
+	bool mApplyToYabai = false;
+	QTimer mPublishTimer;
+};
 
 class CocoaPanelEventFilter: public QObject {
 	Q_OBJECT;
@@ -46,6 +110,13 @@ class CocoaPanelWindow: public ProxyWindowBase {
 	QSDOC_HIDE Q_PROPERTY(Margins margins READ margins WRITE setMargins NOTIFY marginsChanged);
 	QSDOC_HIDE Q_PROPERTY(bool aboveWindows READ aboveWindows WRITE setAboveWindows NOTIFY aboveWindowsChanged);
 	QSDOC_HIDE Q_PROPERTY(bool focusable READ focusable WRITE setFocusable NOTIFY focusableChanged);
+	/// Whether the panel plays the compositor's open/close animation.
+	///
+	/// On Hyprland every layer surface pops in and out (end-4's `layersIn` /
+	/// `layersOut`), which this backend reproduces. Set false for a panel that
+	/// needs `visible: false` to take effect at once rather than after the
+	/// 270 ms close. Defaults to true.
+	Q_PROPERTY(bool animate READ animate WRITE setAnimate NOTIFY animateChanged);
 	// clang-format on
 	QML_ELEMENT;
 
@@ -87,6 +158,9 @@ public:
 	[[nodiscard]] bool focusable() const { return this->bFocusable; }
 	void setFocusable(bool focusable) { this->bFocusable = focusable; }
 
+	[[nodiscard]] bool animate() const { return this->mAnimate; }
+	void setAnimate(bool animate);
+
 	/// Pin the window to a specific native level, overriding the coarse
 	/// aboveWindows boolean. Set by the WlrLayershell attached object so
 	/// layer-shell configs land on the layer they asked for.
@@ -99,6 +173,10 @@ signals:
 	QSDOC_HIDE void marginsChanged();
 	QSDOC_HIDE void aboveWindowsChanged();
 	QSDOC_HIDE void focusableChanged();
+	void animateChanged();
+
+protected:
+	void onPolished() override;
 
 private slots:
 	void cocoaInit();
@@ -114,6 +192,9 @@ private:
 
 	[[nodiscard]] PanelAnimation openCloseAnimation() const;
 	void finishOpenCloseAnimation();
+
+	/// Release the native window behind a panel that has stayed hidden.
+	void releaseHiddenGraphics();
 
 public:
 	/// Post a synthetic leave when the pointer is no longer over this panel.
@@ -147,10 +228,28 @@ private:
 	// can be resized and repositioned freely while it plays.
 	QTimer mAnimationTimer;
 	bool mClosing = false;
+	bool mAnimate = true;
+
+	// Hiding a panel does not free what it holds on the GPU: measured on a
+	// 600pt full-height panel, Qt's own release (non-persistent scene graph and
+	// graphics, releaseResources) dropped IOAccelerator from 3.9 MB to 0.4 MB
+	// but one of the two 10 MB Metal drawables stayed mapped for as long as the
+	// NSWindow existed, whatever was done to the CAMetalLayer. Two hidden
+	// full-height panels held 113 MB that way. Releasing the platform window
+	// itself is what frees it, so a panel that stays hidden past this timer
+	// destroys its native window and gets a fresh one on show. The delay keeps
+	// a hover popup that reopens at once from paying for a new window each time.
+	QTimer mReleaseTimer;
 
 	bool mHasLayerOverride = false;
 	bool mPointerInside = false;
 	QPoint mLastPointer;
+
+	// PanelWindow.mask, as a hit-test region in window coordinates. Never
+	// handed to QWindow::setMask -- see setPanelInputEnabled. A null mask
+	// (mHasMask false) is the whole window; a set but empty one is nothing.
+	bool mHasMask = false;
+	QRegion mMaskRegion;
 	PanelLayer mLayerOverride = PanelLayer::Top;
 
 	// clang-format off
@@ -175,6 +274,8 @@ private:
 
 class CocoaPanelInterface: public PanelWindowInterface {
 	Q_OBJECT;
+	/// See CocoaPanelWindow::animate.
+	Q_PROPERTY(bool animate READ animate WRITE setAnimate NOTIFY animateChanged);
 
 public:
 	explicit CocoaPanelInterface(QObject* parent = nullptr);
@@ -203,8 +304,14 @@ public:
 	void setFocusable(bool focusable) override;
 	// NOLINTEND
 
+	[[nodiscard]] bool animate() const;
+	void setAnimate(bool animate);
+
 	/// The WlrLayershell attached object for this panel, created on first use.
 	[[nodiscard]] CocoaLayershell* layershell();
+
+signals:
+	void animateChanged();
 
 private:
 	CocoaPanelWindow* panel;

@@ -33,6 +33,19 @@ pragma Singleton
 // The models are ObjectModel-SHAPED, exposing `.values` -- which is how every
 // consumer config on disk reads them. They are NOT QAbstractListModels, so unlike
 // upstream they cannot be passed to a Repeater as `model:` directly.
+//
+// COST: the steady state is a single `blueutil -p -d --paired --format json`
+// every 30 s (0.03 spawns/s): blueutil processes its arguments in order and
+// prints all three answers in one run, and the paired listing already carries
+// `connected`, so the separate --connected call is gone. system_profiler, which
+// only contributes device type and battery level, runs at startup, every 10
+// minutes, and whenever the set of connected devices changes -- a battery
+// level is only interesting for a device that just connected. Every write the
+// shim makes (power, connect, pair, ...) re-polls immediately on completion, so
+// the UI never waits out the interval for its own action.
+// ponytail: a device connecting from the other end (AirPods opened) shows up
+// within 30 s. Upgrade path: P1-10 (IOBluetooth connect/disconnect
+// notifications) makes it event-driven with zero spawns.
 
 import QtQuick
 import Quickshell
@@ -76,46 +89,8 @@ Singleton {
     property var _fromProfiler: ({})
     property var _fromInquiry: ({})
     property var _queue: []
-
-    // --- macOS backing ------------------------------------------------------
-    //
-    // Deliberately backslash-free: this is a JS template literal, where a stray
-    // escape would be eaten by the JS lexer before sh ever saw it.
-
-    // Every value goes through `echo "$(...)"`: blueutil's --format json output has
-    // NO trailing newline, so without this the next @@MARKER lands on the same line
-    // as the JSON and the section parse swallows it.
-    readonly property string _pollScript: `
-if command -v blueutil >/dev/null 2>&1; then
-  echo "@@TOOL blueutil"
-  echo "@@POWER"
-  echo "$(blueutil -p 2>/dev/null)"
-  echo "@@DISCOVERABLE"
-  echo "$(blueutil -d 2>/dev/null)"
-  echo "@@PAIRED"
-  echo "$(blueutil --paired --format json 2>/dev/null)"
-  echo "@@CONNECTED"
-  echo "$(blueutil --connected --format json 2>/dev/null)"
-else
-  echo "@@TOOL none"
-fi
-`
-
-    // Line-based rather than index-based, so a stray "@@" inside a device name or a
-    // missing trailing newline cannot corrupt a section boundary.
-    function _section(text: string, name: string): string {
-        const out = [];
-        let inside = false;
-        for (const line of text.split("\n")) {
-            if (line.startsWith("@@")) {
-                inside = line.slice(2).split(" ")[0] === name;
-                continue;
-            }
-            if (inside)
-                out.push(line);
-        }
-        return out.join("\n").trim();
-    }
+    // Sorted, joined addresses of the connected set as of the last poll.
+    property string _connectedKey: ""
 
     // blueutil prints "28-11-a5-dc-e8-b4"; system_profiler prints
     // "28:11:A5:DC:E8:B4". BlueZ uses the latter, so normalise to that.
@@ -133,15 +108,32 @@ fi
 
     // --- polling ------------------------------------------------------------
 
+    // One blueutil run answers `-p`, `-d` and `--paired` in argument order, so
+    // the output is "<power>\n<discoverable>\n[...json...]" -- the JSON array
+    // has no trailing newline of its own. The array is cut out by its brackets
+    // and whatever is left is the two flags, so the parse does not depend on
+    // blueutil's ordering.
     function _applyPoll(text: string): void {
-        root._hasBlueutil = /@@TOOL blueutil/.test(text);
-        if (!root._hasBlueutil)
-            return; // system_profiler alone drives everything; see _applyProfiler.
+        // Nothing at all, not even "[]": the binary is missing. Quickshell has
+        // already logged the failed start once; stop asking so it does not log
+        // it every 30 s, and let system_profiler carry the read-only fallback.
+        if (text.trim().length === 0) {
+            root._hasBlueutil = false;
+            pollTimer.running = false;
+            root._rebuild();
+            return;
+        }
+        root._hasBlueutil = true;
+
+        const start = text.indexOf("[");
+        const end = text.lastIndexOf("]");
+        const list = start !== -1 && end > start ? root._json(text.slice(start, end + 1)) ?? [] : [];
+        const flags = (start !== -1 ? text.slice(0, start) + text.slice(end + 1) : text).trim().split(/\s+/);
 
         const adapter = root.defaultAdapter;
         adapter._updating = true;
-        adapter.enabled = root._section(text, "POWER") === "1";
-        adapter.discoverable = root._section(text, "DISCOVERABLE") === "1";
+        adapter.enabled = flags[0] === "1";
+        adapter.discoverable = flags[1] === "1";
         adapter.state = adapter.enabled ? BluetoothAdapterState.Enabled : BluetoothAdapterState.Disabled;
         adapter._updating = false;
 
@@ -149,7 +141,8 @@ fi
             root.adapters.values = [adapter];
 
         const records = {};
-        for (const entry of root._json(root._section(text, "PAIRED")) ?? []) {
+        const connected = [];
+        for (const entry of list) {
             const address = root._normalize(entry.address);
             records[address] = {
                 "address": address,
@@ -157,20 +150,18 @@ fi
                 "paired": entry.paired ?? true,
                 "connected": entry.connected ?? false
             };
-        }
-        for (const entry of root._json(root._section(text, "CONNECTED")) ?? []) {
-            const address = root._normalize(entry.address);
-            const record = records[address] ?? {
-                "address": address,
-                "name": entry.name ?? address,
-                "paired": entry.paired ?? false
-            };
-            record.connected = true;
-            records[address] = record;
+            if (entry.connected)
+                connected.push(address);
         }
 
         root._fromBlueutil = records;
         root._rebuild();
+
+        const key = connected.sort().join(",");
+        if (key !== root._connectedKey) {
+            root._connectedKey = key;
+            profilerProc.running = true;
+        }
     }
 
     function _applyProfiler(text: string): void {
@@ -399,7 +390,7 @@ fi
         id: pollProc
 
         running: true
-        command: ["sh", "-c", root._pollScript]
+        command: ["blueutil", "-p", "-d", "--paired", "--format", "json"]
 
         stdout: StdioCollector {
             onStreamFinished: root._applyPoll(text)
@@ -420,6 +411,7 @@ fi
     Process {
         id: execProc
 
+        // The shim's own write just landed: read it back now, not in 30 s.
         onExited: {
             root._pump();
             pollProc.running = true;
@@ -451,17 +443,17 @@ fi
         onExited: root._finishDiscovery()
     }
 
-    // blueutil is cheap (a few ms); system_profiler can take seconds on older
-    // hardware, so it gets a much longer interval.
     Timer {
-        interval: 5000
+        id: pollTimer
+
+        interval: 30000
         running: true
         repeat: true
         onTriggered: pollProc.running = true
     }
 
     Timer {
-        interval: 30000
+        interval: 600000
         running: true
         repeat: true
         onTriggered: profilerProc.running = true

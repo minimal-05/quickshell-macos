@@ -11,13 +11,22 @@
 // notification host or observe other applications' notifications.
 // (NSDistributedNotificationCenter is unrelated: it carries app-defined IPC
 // messages, not user notifications.) Notifications raised by OTHER apps therefore
-// still cannot reach this server on their own.
+// only reach this server through bin/qs-notify-bridge, which replays the
+// Notification Center store.
 //
 // WHAT DOES WORK: notifications raised by the shell itself, and anything else that
 // deliberately posts to us. Those arrive over quickshell's own IPC socket instead
-// of D-Bus:
+// of D-Bus, as the freedesktop Notify() call with the two structured arguments
+// (actions, hints) folded into one JSON string, the only shape IpcHandler can
+// marshal:
 //
-//     quickshell -p <config> ipc call notifications notify <app> <summary> <body> ...
+//     quickshell -p <config> ipc call notifications notifyv2 \
+//         <appName> <replacesId> <appIcon> <summary> <body> <expireTimeout> <extraJson>
+//
+//     extraJson = {"actions": [["id", "text"], ...],
+//                  "hints":   {"urgency": 2, "transient": true, "image-path": "...", ...},
+//                  "reply":   "<fifo or file the sender reads action/close events from>",
+//                  "wait":    true}          // sender wants the close event too
 //
 // which is what the notify-send(1) stand-in in bin/ calls. end-4's config shells
 // out to `notify-send` from a dozen places (battery warnings, recording, downloads,
@@ -26,8 +35,10 @@
 // macOS banner where the shell can neither style nor read them back.
 //
 // Everything downstream of the notification() signal is the real upstream
-// contract: notifications stay tracked while `tracked` is true, dismiss()/expire()
-// untrack and destroy them, and trackedNotifications.values reflects the live set.
+// contract: replacesId updates the existing notification in place without a new
+// signal, notifications stay tracked while `tracked` is true, dismiss()/expire()/
+// `tracked = false` untrack and destroy them, actions invoke back to the sender,
+// and trackedNotifications.values reflects the live set.
 
 import QtQuick
 import Quickshell.Io
@@ -72,23 +83,45 @@ QtObject {
         Notification {}
     }
 
-    // The freedesktop wire protocol is replaced by quickshell's own IPC socket;
-    // see the file header. Argument types are limited to what IpcHandler can
-    // marshal, so hints collapse to the one flag notify-send actually passes.
     readonly property IpcHandler ipc: IpcHandler {
         target: "notifications"
 
-        function notify(appName: string, summary: string, body: string, appIcon: string, urgency: int, expireTimeout: int, isTransient: bool): int {
-            return server.post({
+        // Mirrors org.freedesktop.Notifications.Notify; see the file header for
+        // the JSON argument.
+        function notifyv2(appName: string, replacesId: int, appIcon: string, summary: string, body: string, expireTimeout: int, extra: string): int {
+            let x = {};
+            if (extra !== "") {
+                try {
+                    x = JSON.parse(extra);
+                } catch (e) {
+                    console.warn("notifications: ignoring malformed extra JSON:", e.message);
+                }
+            }
+            return server.deliver(replacesId, {
                 appName: appName,
+                appIcon: appIcon,
                 summary: summary,
                 body: body,
-                appIcon: appIcon,
-                urgency: urgency,
                 expireTimeout: expireTimeout,
-                hints: isTransient ? ({
-                        "transient": true
-                    }) : ({})
+                actions: x.actions ?? [],
+                hints: x.hints ?? ({}),
+                replyPath: x.reply ?? "",
+                replyOnClose: !!x.wait
+            });
+        }
+
+        // The pre-v2 call; kept so a caller built against it keeps working.
+        function notify(appName: string, summary: string, body: string, appIcon: string, urgency: int, expireTimeout: int, isTransient: bool): int {
+            return server.deliver(0, {
+                appName: appName,
+                appIcon: appIcon,
+                summary: summary,
+                body: body,
+                expireTimeout: expireTimeout,
+                hints: {
+                    "urgency": urgency,
+                    "transient": isTransient
+                }
             });
         }
 
@@ -97,34 +130,44 @@ QtObject {
             const notif = server.trackedList.find(n => n.id === id);
             if (!notif)
                 return false;
-            notif.dismiss();
+            notif.close(NotificationCloseReason.CloseRequested);
             return true;
         }
     }
 
     /// Deliver a notification as if it had arrived from a remote application.
-    /// Returns its id.
+    /// Returns its id. Kept for QML callers; the IPC path goes through deliver().
     function post(params): int {
-        const notif = server.notifComponent.createObject(server, {
-            "id": server.nextId++,
-            "appName": params.appName ?? "",
-            "appIcon": params.appIcon ?? "",
-            "summary": params.summary ?? "",
-            "body": params.body ?? "",
-            "image": params.image ?? "",
-            "urgency": params.urgency ?? NotificationUrgency.Normal,
-            "expireTimeout": params.expireTimeout ?? -1,
-            "hints": params.hints ?? ({})
-        });
+        return server.deliver(params.replacesId ?? 0, params);
+    }
+
+    // Transcription of NotificationServer::Notify (server.cpp): a replacesId
+    // naming a tracked notification updates it in place and returns its id with
+    // no new notification() signal; anything else is a fresh notification the
+    // consumer must claim (tracked = true) during the signal or lose.
+    function deliver(replacesId: int, params): int {
+        let notif = replacesId > 0 ? server.trackedList.find(n => n.id === replacesId) : undefined;
+        const old = !!notif;
+        if (!notif) {
+            notif = server.notifComponent.createObject(server, {
+                "id": server.nextId++
+            });
+        }
+        notif.updateProperties(params);
+        if (old)
+            return notif.id;
 
         notif.closed.connect(() => server.untrack(notif));
         server.trackedList = [...server.trackedList, notif];
         server.notification(notif);
 
-        // Upstream drops a notification the consumer never claimed.
-        if (!notif.tracked)
+        // Upstream drops a notification the consumer never claimed and tells the
+        // sender it was closed (its default close reason is Dismissed).
+        if (!notif.tracked) {
+            if (notif.replyOnClose)
+                notif.sendReply("closed", String(NotificationCloseReason.Dismissed));
             server.untrack(notif);
-
+        }
         return notif.id;
     }
 

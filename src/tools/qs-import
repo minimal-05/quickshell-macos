@@ -1,0 +1,107 @@
+#!/bin/bash
+# Import a third-party quickshell config and leave it runnable as `qs -c <name>`.
+#
+#   qs-import https://github.com/end-4/dots-hyprland.git ii
+#   qs-import ~/somewhere/their-shell mine2
+#   qs-import --list
+#
+# Quickshell finds a config as <xdg dir>/quickshell/<name>/shell.qml, so an
+# import is really just "put the tree in the right place". What this adds is the
+# three things that actually go wrong, each of which cost a debugging session
+# before it was written down:
+#
+#   1. A top-level ~/.config/quickshell/shell.qml registers as the `default`
+#      config and quickshell then IGNORES EVERY SUBDIRECTORY. One stray file
+#      makes every named config invisible, and not with an error -- they simply
+#      are not found. Checked first, because nothing else matters until it is
+#      fixed.
+#   2. Configs use git submodules for vendored QML (end-4 keeps its rounded
+#      polygon shapes in one). A plain clone leaves the directory empty and the
+#      config dies on `module "..." is not installed`, naming a path that is
+#      sitting right there on disk. So: always --recursive.
+#   3. Some configs ship a C++ QML plugin (caelestia's Caelestia.Config) which
+#      has to be compiled before the config will load at all -- on Linux too.
+#      Detected and reported, rather than left to surface as `Type X
+#      unavailable` three imports deep.
+#
+# What this does NOT do is make a Linux config macOS-native: that is the shims'
+# job (Hyprland, Pipewire, UPower, Mpris, ...) and the tools' (hyprctl,
+# notify-send, cliphist, ...). Those are why end-4's upstream config boots here
+# unmodified, with no errors.
+
+set -euo pipefail
+
+CONFIG_ROOT="${XDG_CONFIG_HOME:-$HOME/.config}/quickshell"
+
+die() { printf '\033[31merror\033[0m %s\n' "$1" >&2; exit 1; }
+say() { printf '\033[1;36m==>\033[0m %s\n' "$1"; }
+warn() { printf '\033[33mwarn\033[0m  %s\n' "$1" >&2; }
+
+if [ "${1:-}" = "--list" ]; then
+    [ -d "$CONFIG_ROOT" ] || die "no $CONFIG_ROOT"
+    for d in "$CONFIG_ROOT"/*/; do
+        [ -f "$d/shell.qml" ] || continue
+        printf '  %-20s %s\n' "$(basename "$d")" "$d"
+    done
+    exit 0
+fi
+
+SRC="${1:-}"
+[ -n "$SRC" ] || die "usage: qs-import <git-url|path> [name]   |   qs-import --list"
+
+# Default the name from the source, so `qs-import .../noctalia-shell.git` lands
+# at `noctalia-shell` rather than making you invent a name first.
+NAME="${2:-$(basename "$SRC" .git)}"
+DEST="$CONFIG_ROOT/$NAME"
+
+# (1) The trap. A default config silently shadows every named one, so refuse to
+# import into a tree where the result could not be run afterwards.
+if [ -f "$CONFIG_ROOT/shell.qml" ]; then
+    die "$CONFIG_ROOT/shell.qml exists, which registers as the 'default' config
+      and makes quickshell ignore every subdirectory -- including this import.
+      Move it into a directory of its own first:
+          mkdir $CONFIG_ROOT/mine && git -C $CONFIG_ROOT mv <files> mine/"
+fi
+
+[ -e "$DEST" ] && die "$DEST already exists"
+mkdir -p "$CONFIG_ROOT"
+
+# (2) --recursive, always. See the note above.
+if [ -d "$SRC" ]; then
+    say "copying $SRC"
+    cp -R "$SRC" "$DEST"
+else
+    say "cloning $SRC"
+    git clone --recursive --depth 1 "$SRC" "$DEST" >/dev/null 2>&1 \
+        || die "clone failed: $SRC"
+fi
+
+# Some repos are a whole dotfiles tree rather than a bare config, so find the
+# shell.qml and keep the directory holding it. Shallowest wins: end-4 ships the
+# config at dots/.config/quickshell/ii and examples further down.
+if [ ! -f "$DEST/shell.qml" ]; then
+    found="$(find "$DEST" -name shell.qml 2>/dev/null \
+        | awk '{print gsub("/","/"), $0}' | sort -n | head -1 | cut -d' ' -f2-)"
+    [ -n "$found" ] || die "no shell.qml anywhere in $SRC -- not a quickshell config"
+
+    sub="$(dirname "$found")"
+    say "config is at ${sub#"$DEST"/}, lifting it"
+    tmp="$(mktemp -d "${TMPDIR:-/tmp}/qs-import.XXXXXX")"
+    mv "$sub" "$tmp/c"
+    rm -rf "$DEST"
+    mv "$tmp/c" "$DEST"
+    rmdir "$tmp" 2>/dev/null || true
+fi
+
+# (3) A config-shipped C++ QML plugin has to be built before the config loads.
+# Not built for you: each wants its own cmake invocation, and most want Linux
+# libraries that are not here.
+if [ -f "$DEST/CMakeLists.txt" ] || [ -d "$DEST/plugin" ]; then
+    warn "$NAME ships a C++ QML plugin (CMakeLists.txt/plugin/)."
+    warn "It will not load until that is built and on QML2_IMPORT_PATH -- the"
+    warn "same requirement it has on Linux. See the config's own README."
+fi
+
+say "imported as '$NAME'"
+echo
+echo "  qs -c $NAME"

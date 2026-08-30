@@ -37,9 +37,12 @@ QtObject {
     property Cocoa.FocusGrab _monitor: Cocoa.FocusGrab {
         active: root.active
 
-        onDismissed: {
-            root.active = false;
-            root.cleared();
-        }
+        // No `root.active = false` here: that is an imperative write to a
+        // property the owner binds (GlobalFocusGrab binds it to whether anything
+        // dismissable is open), and it destroys that binding for good. The grab
+        // then never re-arms, so the outside click closes a sidebar exactly once
+        // per shell process and never again. Dismissing empties the owner's list,
+        // which drops `active` through the binding and removes the monitor.
+        onDismissed: root.cleared()
     }
 }

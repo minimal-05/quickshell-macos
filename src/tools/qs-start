@@ -1,0 +1,62 @@
+#!/bin/bash
+# Bring up the desktop shell. launchd runs this at login (org.quickshell.bar).
+#
+#   qs-start              the default config
+#   qs-start -c mine      another one
+#
+# Everything about *running* quickshell -- env, config resolution, the bundle
+# path -- belongs to `qs`, and this execs it. What lives here is only the part
+# that makes sense once, at the start of a session: yabai's reservation for the
+# strip the bar draws in, and the notification bridge.
+#
+# This absorbed bin/qs-switch, which existed to hand the bar back and forth with
+# SketchyBar. There is no second bar any more, so the switching is gone and only
+# the yabai setup it did on the way in survives.
+
+set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# The checkout: two levels up from src/tools, four from inside the bundle.
+ROOT="${HERE%/Quickshell.app/Contents/Resources/tools}"; ROOT="${ROOT%/src/tools}"
+QS="$ROOT/Quickshell.app/Contents/MacOS/quickshell"
+
+# yabai reserves space for whichever bar is running. Getting this in before the
+# shell comes up stops the desktop -- and the icons sitting on it -- showing
+# through the strip for the three seconds quickshell takes to start.
+#
+# Only an initial guess for the common top-bar case: services/YabaiBarSpace.qml
+# takes over once the shell is up and sets whatever the bar's actual position
+# and height call for, then keeps it in step. The two never disagree for longer
+# than that startup gap.
+QS_BAR_HEIGHT=40
+SIDE_PADDING=8
+
+if command -v yabai >/dev/null 2>&1; then
+    yabai -m config external_bar "all:$QS_BAR_HEIGHT:0" >/dev/null 2>&1 || true
+    yabai -m config top_padding "$SIDE_PADDING" >/dev/null 2>&1 || true
+    yabai -m config bottom_padding "$SIDE_PADDING" >/dev/null 2>&1 || true
+    yabai -m config left_padding "$SIDE_PADDING" >/dev/null 2>&1 || true
+    yabai -m config right_padding "$SIDE_PADDING" >/dev/null 2>&1 || true
+
+    # Shell surfaces are overlays and the settings window is a dialog: neither
+    # belongs in the tiling layout. The label makes this idempotent -- yabai
+    # replaces a rule of the same label instead of stacking another copy.
+    yabai -m rule --add label=quickshell app="^quickshell$" manage=off >/dev/null 2>&1 || true
+fi
+
+# Previous instances leave orphan mediaremote-adapter.pl helpers and dead
+# runtime dirs behind (see qs-reap); a fresh start is the moment to clear them.
+"$HERE/qs-reap" --quiet
+
+# Other applications' notifications reach the shell only through the bridge:
+# macOS has no notification-server protocol quickshell can claim, so it polls
+# Notification Center instead (see qs-notify-bridge). QS_RESPONSIBLE is who
+# launched us, which is the binary that has to hold Full Disk Access -- the
+# bridge is backgrounded and reparented to launchd before it could look itself
+# up. It waits for the shell to appear, locks itself against duplicates, and
+# exits once the shell is gone, so exec'ing over this script leaves no orphan.
+export QS_RESPONSIBLE="$(ps -o comm= -p "$PPID" 2>/dev/null | tail -1)"
+nohup "$HERE/qs-notify-bridge" >>"${TMPDIR:-/tmp}/qs-notify-bridge.log" 2>&1 &
+disown
+
+exec "$QS" "$@"

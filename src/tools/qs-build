@@ -1,0 +1,46 @@
+#!/bin/bash
+# Build Quickshell for macOS from this checkout.
+#
+#   qs-build              build into ./build and install into Quickshell.app
+#   qs-build --clean      discard the build directory first
+#
+# Runs from src/tools in a fresh checkout (`bin/qs qs-build`) and from inside
+# the bundle afterwards (bin/qs-build); the helper binaries and every tool are
+# qs-bundle's job, so nothing here knows their names.
+#
+# QS_CODESIGN_IDENTITY="Quickshell Dev" signs the bundle with that certificate
+# so TCC grants survive rebuilds (PLATFORM.md, "TCC identity"); unset = ad-hoc.
+#
+# The Cocoa backend lives in src/cocoa/ in this repo. Edit it and re-run.
+
+set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# The checkout: two levels up from src/tools, four from inside the bundle.
+ROOT="${HERE%/Quickshell.app/Contents/Resources/tools}"; ROOT="${ROOT%/src/tools}"
+BUILD="$ROOT/build"
+
+export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+
+[ "${1:-}" = "--clean" ] && { echo "==> removing $BUILD"; rm -rf "$BUILD"; }
+
+for tool in cmake ninja git python3; do
+    command -v "$tool" >/dev/null || { echo "missing: $tool" >&2; exit 1; }
+done
+
+echo "==> configuring"
+# The Linux-only subsystems default off on Apple, so no -D flags are needed.
+cmake -B "$BUILD" -S "$ROOT" -G Ninja \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_PREFIX_PATH=/opt/homebrew \
+    -DDISTRIBUTOR="quickshell-macos" >/dev/null
+
+echo "==> building"
+cmake --build "$BUILD" -j"$(sysctl -n hw.ncpu)"
+
+# Into Quickshell.app rather than loose in bin/, so TCC keys its grants on a
+# stable bundle id instead of a cdhash that changes every build. The tools and
+# bin/'s symlinks are installed by the same step.
+"$HERE/qs-bundle" "$BUILD/src/quickshell"
+
+"$ROOT/bin/qs" --version

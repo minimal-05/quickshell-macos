@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Info.plist for Quickshell.app; bin/qs-bundle copies it into the bundle.
+	     TCC keys its grants (Screen Recording, Accessibility, Full Disk Access,
+	     Location, Automation) on the bundle id plus the signing certificate, so
+	     this id must never change. The usage-description strings are required
+	     for the matching prompt to appear at all: without one the request is
+	     denied silently. -->
+	<key>CFBundleIdentifier</key>
+	<string>org.quickshell.shell</string>
+	<key>CFBundleName</key>
+	<string>Quickshell</string>
+	<key>CFBundleDisplayName</key>
+	<string>Quickshell</string>
+	<key>CFBundleExecutable</key>
+	<string>quickshell</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.2</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>13.0</string>
+	<!-- Accessory policy: no Dock tile, no menu bar. The settings/finder/preview
+	     roots switch themselves to a regular app at startup (src/cocoa/init.cpp). -->
+	<key>LSUIElement</key>
+	<true/>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSSupportsAutomaticGraphicsSwitching</key>
+	<true/>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Quickshell uses your location for the weather widget.</string>
+	<key>NSLocationUsageDescription</key>
+	<string>Quickshell uses your location for the weather widget.</string>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>Quickshell controls other applications (volume, media, windows) through Apple Events.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Quickshell records the microphone when you start a screen recording with audio.</string>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>Quickshell lists and connects Bluetooth devices from the sidebar.</string>
+	<key>NSScreenCaptureUsageDescription</key>
+	<string>Quickshell captures window thumbnails for the overview and the screenshot tool.</string>
+	<key>NSSystemAdministrationUsageDescription</key>
+	<string>Quickshell reads Notification Center's database to mirror other applications' notifications.</string>
+</dict>
+</plist>

@@ -1,0 +1,226 @@
+#!/bin/bash
+# notify-send(1) for macOS.
+#
+# Linux shell configs call this by name from a lot of places, including inside
+# shell strings where rewriting the call site is awkward. Providing the name on
+# PATH fixes every one of them at once.
+#
+# Delivery order:
+#   1. The running quickshell instance, over its own IPC socket, into the
+#      Quickshell.Services.Notifications shim's NotificationServer. That is what
+#      makes the shell's own notification popup and sidebar list show these -- on
+#      Linux they arrive over org.freedesktop.Notifications, which macOS has no
+#      equivalent of, so quickshell IPC stands in for the bus. The call is the
+#      freedesktop Notify() with actions and hints folded into one JSON argument
+#      (see NotificationServer.qml).
+#   2. If no shell is running (or IPC fails), macOS Notification Center via
+#      osascript, so the message is not simply lost.
+#
+# Options, as libnotify's notify-send: -a/--app-name, -i/--icon, -u/--urgency,
+# -t/--expire-time, -c/--category, -h/--hint TYPE:NAME:VALUE, -A/--action
+# ID=LABEL, -e/--transient, -p/--print-id, -r/--replace-id, -w/--wait.
+#
+# -A and -w need the shell to talk back. On Linux that is the bus's
+# ActionInvoked/NotificationClosed signals; here this script makes a FIFO under
+# $XDG_RUNTIME_DIR/quickshell/notify/, passes its path in the call, and reads
+# "<id> action <identifier>" / "<id> closed <reason>" lines from it until one
+# ends the wait. The identifier of an invoked action is printed to stdout,
+# which is what `action=$(notify-send -A ...)` callers key on. The FIFO is held
+# open read-write so the shell's writer never blocks and nothing is lost if it
+# writes before the read starts.
+#
+# Extension: --reply-fifo PATH delivers those same lines to a FIFO the caller
+# already owns and returns at once, so a long-running caller (qs-notify-bridge)
+# can service actions for many notifications without a waiting process each.
+
+set -uo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# The checkout: two levels up from src/tools, four from inside the bundle.
+ROOT="${HERE%/Quickshell.app/Contents/Resources/tools}"; ROOT="${ROOT%/src/tools}"
+QS="$ROOT/Quickshell.app/Contents/MacOS/quickshell"
+
+# `quickshell ipc` picks an instance by config path. A launcher that exports
+# QS_SHELL_CONFIG has named the shell; otherwise it is the default config's
+# root, the same one a bare `qs` starts (QS_CONFIG_NAME, defaulted by the
+# binary itself; src/launch/tools.cpp).
+# The config: ~/.config/quickshell/<QS_CONFIG_NAME>/ where that directory
+# exists, else ~/.config/quickshell itself -- the flat layout darwin-dotfiles
+# keeps, and what quickshell's own "default" resolves to.
+CFG_DIR="$HOME/.config/quickshell"
+[ -d "$CFG_DIR/${QS_CONFIG_NAME:-end4}" ] && CFG_DIR="$CFG_DIR/${QS_CONFIG_NAME:-end4}"
+config="${QS_SHELL_CONFIG:-$CFG_DIR/shell.qml}"
+
+app=""
+icon=""
+expire=-1
+replaces=0
+print_id=false
+wait_close=false
+reply_fifo=""
+hints=()
+actions=()
+args=()
+
+# Minimal JSON string quoting in bash: enough for every notification body
+# end-4 sends, without a python spawn per call. ponytail: control characters
+# other than \n \r \t are passed through unescaped; the upgrade path is
+# `python3 -c 'json.dumps'` at ~30 ms per call.
+json_str() {
+    local s=$1
+    s=${s//\\/\\\\}
+    s=${s//\"/\\\"}
+    s=${s//$'\n'/\\n}
+    s=${s//$'\r'/\\r}
+    s=${s//$'\t'/\\t}
+    printf '"%s"' "$s"
+}
+
+add_hint() { # key, json-value
+    hints+=("$(json_str "$1"):$2")
+}
+
+set_urgency() {
+    case "$1" in
+        low|0)      add_hint urgency 0 ;;
+        critical|2) add_hint urgency 2 ;;
+        *)          add_hint urgency 1 ;;
+    esac
+}
+
+# TYPE:NAME:VALUE as libnotify, plus the bare NAME:VALUE form seen in the wild.
+set_hint() {
+    local spec=$1 type name value
+    case "$spec" in
+        *:*:*) type=${spec%%:*}; spec=${spec#*:} ;;
+        *)     type="" ;;
+    esac
+    name=${spec%%:*}
+    value=${spec#*:}
+    case "$type" in
+        int|byte|double)
+            if [[ "$value" =~ ^-?[0-9]+(\.[0-9]+)?$ ]]; then add_hint "$name" "$value"
+            else add_hint "$name" "$(json_str "$value")"; fi ;;
+        boolean)
+            case "$value" in 1|true|yes|on) add_hint "$name" true ;; *) add_hint "$name" false ;; esac ;;
+        string|variant)
+            add_hint "$name" "$(json_str "$value")" ;;
+        *)
+            case "$value" in
+                true|false) add_hint "$name" "$value" ;;
+                *) if [[ "$value" =~ ^-?[0-9]+$ ]]; then add_hint "$name" "$value"
+                   else add_hint "$name" "$(json_str "$value")"; fi ;;
+            esac ;;
+    esac
+}
+
+# ID=LABEL, or LABEL alone (libnotify then uses the action's index as its id).
+add_action() {
+    local id label
+    case "$1" in
+        *=*) id=${1%%=*}; label=${1#*=} ;;
+        *)   id=${#actions[@]}; label=$1 ;;
+    esac
+    actions+=("[$(json_str "$id"),$(json_str "$label")]")
+}
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -a|--app-name)      app="${2:-}"; shift 2 ;;
+        -i|--icon)          icon="${2:-}"; shift 2 ;;
+        -u|--urgency)       set_urgency "${2:-}"; shift 2 ;;
+        -t|--expire-time)   expire="${2:--1}"; shift 2 ;;
+        -h|--hint)          set_hint "${2:-}"; shift 2 ;;
+        -c|--category)      add_hint category "$(json_str "${2:-}")"; shift 2 ;;
+        -A|--action)        add_action "${2:-}"; shift 2 ;;
+        -r|--replace-id)    replaces="${2:-0}"; shift 2 ;;
+        -e|--transient)     add_hint transient true; shift ;;
+        -p|--print-id)      print_id=true; shift ;;
+        -w|--wait)          wait_close=true; shift ;;
+        --reply-fifo)       reply_fifo="${2:-}"; shift 2 ;;
+        --app-name=*)       app="${1#*=}"; shift ;;
+        --icon=*)           icon="${1#*=}"; shift ;;
+        --urgency=*)        set_urgency "${1#*=}"; shift ;;
+        --expire-time=*)    expire="${1#*=}"; shift ;;
+        --hint=*)           set_hint "${1#*=}"; shift ;;
+        --category=*)       add_hint category "$(json_str "${1#*=}")"; shift ;;
+        --action=*)         add_action "${1#*=}"; shift ;;
+        --replace-id=*)     replaces="${1#*=}"; shift ;;
+        --reply-fifo=*)     reply_fifo="${1#*=}"; shift ;;
+        -v|--version)       echo "notify-send 0.8.4 (quickshell-macos)"; exit 0 ;;
+        --help)             sed -n '2,36p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        --)                 shift; while [ $# -gt 0 ]; do args+=("$1"); shift; done ;;
+        -*)                 shift ;;
+        *)                  args+=("$1"); shift ;;
+    esac
+done
+
+title="${args[0]-}"
+body="${args[1]-}"
+[[ "$replaces" =~ ^[0-9]+$ ]] || replaces=0
+[[ "$expire" =~ ^-?[0-9]+$ ]] || expire=-1
+
+# The same default the binary applies; the reply FIFO below lives under it.
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp/quickshell-$UID}"
+# This bundle's binary by default; QS_BINARY is the same override qs-test
+# honours, for a worktree's build.
+BINARY="${QS_BINARY:-$QS}"
+
+# Reply channel: the caller's FIFO, or our own when we have to wait.
+reply=""
+waiting=false
+own_fifo=""
+if [ -n "$reply_fifo" ]; then
+    reply="$reply_fifo"
+elif [ ${#actions[@]} -gt 0 ] || $wait_close; then
+    dir="$XDG_RUNTIME_DIR/quickshell/notify"
+    mkdir -p "$dir"
+    own_fifo="$dir/$$"
+    rm -f "$own_fifo"
+    if mkfifo "$own_fifo" 2>/dev/null; then
+        # Read-write: the open cannot block, and lines written before the read
+        # loop starts stay in the pipe.
+        exec 3<>"$own_fifo"
+        reply="$own_fifo"
+        waiting=true
+        trap 'rm -f "$own_fifo"' EXIT
+    fi
+fi
+
+extra="{\"actions\":[$(IFS=,; printf '%s' "${actions[*]-}")]"
+extra+=",\"hints\":{$(IFS=,; printf '%s' "${hints[*]-}")}"
+[ -n "$reply" ] && extra+=",\"reply\":$(json_str "$reply")"
+[ -n "$reply" ] && extra+=",\"wait\":true"
+extra+="}"
+
+# 1. The shell's own notification server.
+if [ -f "$config" ] \
+   && id="$("$BINARY" -p "$config" ipc call notifications notifyv2 \
+            "$app" "$replaces" "$icon" "$title" "$body" "$expire" "$extra" 2>/dev/null)" \
+   && [[ "$id" =~ ^[0-9]+$ ]]; then
+    $print_id && printf '%s\n' "$id"
+    if $waiting; then
+        # Ends on the first action (its identifier is the output) or on close;
+        # a notification the consumer never tracked is reported closed at once.
+        while IFS=' ' read -r nid kind arg <&3; do
+            [ "$nid" = "$id" ] || continue
+            case "$kind" in
+                action) printf '%s\n' "$arg"; exit 0 ;;
+                closed) exit 0 ;;
+            esac
+        done
+    fi
+    exit 0
+fi
+
+# 2. Fallback: macOS Notification Center. It shows no markup, so strip the
+# HTML-ish tags Linux allows, and escape for AppleScript string literals.
+strip() { printf '%s' "$1" | sed -E 's/<[^>]*>//g'; }
+esc() { printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'; }
+
+script="display notification \"$(esc "$(strip "$body")")\" with title \"$(esc "$(strip "${title:-Notification}")")\""
+[ -n "$app" ] && script+=" subtitle \"$(esc "$app")\""
+
+osascript -e "$script"
+$print_id && printf '0\n'
+exit 0

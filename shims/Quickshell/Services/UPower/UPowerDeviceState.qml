@@ -5,7 +5,7 @@ pragma Singleton
 // REAL: the enum values are copied verbatim from
 // quickshell/src/services/upower/device.hpp (UPowerDeviceState::Enum), so
 // `UPowerDeviceState.Charging` etc. compare correctly against the values
-// UPower.qml assigns from pmset. toString() matches upstream's strings.
+// UPower.qml binds from Quickshell.Cocoa.Power. toString() matches upstream's strings.
 //
 // Both `UPowerDeviceState.Charging` and `UPowerDeviceState.Enum.Charging`
 // resolve, same as the C++ Q_ENUM.

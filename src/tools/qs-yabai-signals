@@ -1,0 +1,122 @@
+#!/bin/bash
+# Have yabai tell the shell what changed, instead of the shell asking yabai
+# four times a second.
+#
+#   qs-yabai-signals install            register every qs_* signal (idempotent)
+#   qs-yabai-signals remove [--if-last PID]
+#                                       drop them; with --if-last, only when no
+#                                       quickshell instance other than PID is up
+#   qs-yabai-signals status             print the qs_* signals yabai holds
+#
+# Each signal's action touches one file per event under
+# $XDG_RUNTIME_DIR/quickshell/yabai/<event>. The Hyprland and ToplevelManager
+# shims watch those files (FileView { watchChanges: true }) and run one query
+# per event, so an idle desktop costs nothing and a change reaches the bar in
+# the time it takes yabai to fork `touch`.
+#
+# yabai runs actions with a near-empty environment (no PATH, no
+# XDG_RUNTIME_DIR), so both the binary and the file path are absolute in the
+# action string. Labels make `--add` replace rather than stack: yabai keeps one
+# signal per label, so a second install is a no-op and remove only touches ours.
+#
+# The shims call `install` when they start. Nothing calls `remove` on a clean
+# shell exit: several instances (shell, settings, finder, tests) share the same
+# files, and an orphaned signal costs one `touch` per event, so the only cost
+# of leaving them is a few lines in `yabai -m signal --list`. `remove --if-last`
+# exists for scripts that want a clean list once the last instance is gone.
+
+set -uo pipefail
+
+export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+RUNTIME="${XDG_RUNTIME_DIR:-/tmp/quickshell-$UID}"
+DIR="$RUNTIME/quickshell/yabai"
+
+# Only the events the shims act on. Windows are re-queried on every one of
+# them; spaces and displays only on their own groups (Hyprland.qml).
+EVENTS=(
+    space_changed space_created space_destroyed
+    window_created window_destroyed window_focused window_moved window_resized
+    window_minimized window_deminimized window_title_changed
+    application_front_switched application_hidden application_visible
+    display_added display_removed display_moved display_resized display_changed
+    dock_did_restart system_woke
+)
+
+usage() { sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'; }
+
+have_yabai() { command -v yabai >/dev/null 2>&1; }
+
+# label \t action for every qs_* signal yabai currently holds.
+current() {
+    yabai -m signal --list 2>/dev/null | /usr/bin/python3 -c '
+import json, sys
+try:
+    sigs = json.load(sys.stdin)
+except ValueError:
+    sys.exit(0)
+for s in sigs:
+    if str(s.get("label", "")).startswith("qs_"):
+        print("\t".join([s["label"], s.get("event", ""), s.get("action", "")]))
+'
+}
+
+cmd_install() {
+    have_yabai || exit 0
+    mkdir -p "$DIR" || { echo "qs-yabai-signals: cannot create $DIR" >&2; exit 1; }
+    # The files exist before any signal fires so FileView has something to
+    # watch from the start rather than waiting for the directory to change.
+    for ev in "${EVENTS[@]}"; do : >> "$DIR/$ev"; done
+
+    local existing; existing="$(current)"
+    local added=0
+    for ev in "${EVENTS[@]}"; do
+        local label="qs_$ev" action="/usr/bin/touch $DIR/$ev"
+        # Skip the ones already registered exactly as we want them: the shims
+        # run install on every start and a warm start should cost two spawns.
+        if printf '%s\n' "$existing" | /usr/bin/grep -qxF "$label	$ev	$action"; then
+            continue
+        fi
+        yabai -m signal --add label="$label" event="$ev" action="$action" \
+            || echo "qs-yabai-signals: failed to add $label" >&2
+        added=$((added + 1))
+    done
+    echo "qs-yabai-signals: $added added, $(( ${#EVENTS[@]} - added )) already present, files in $DIR"
+}
+
+cmd_remove() {
+    have_yabai || exit 0
+    if [ "${1:-}" = "--if-last" ]; then
+        local me="${2:-0}"
+        # Any other quickshell instance still relies on the signals.
+        if pgrep -f 'quickshell(\.app/Contents/MacOS/quickshell)? -p ' | /usr/bin/grep -qvx "$me"; then
+            echo "qs-yabai-signals: another instance is running, keeping signals"
+            exit 0
+        fi
+    fi
+    local n=0
+    while IFS=$'\t' read -r label _ _; do
+        [ -n "$label" ] || continue
+        yabai -m signal --remove "$label" >/dev/null 2>&1 && n=$((n + 1))
+    done <<< "$(current)"
+    echo "qs-yabai-signals: $n removed"
+}
+
+cmd_status() {
+    have_yabai || { echo "qs-yabai-signals: yabai not installed"; exit 1; }
+    local list; list="$(current)"
+    if [ -z "$list" ]; then
+        echo "qs-yabai-signals: none registered (files would live in $DIR)"
+        exit 1
+    fi
+    printf '%s\n' "$list" | while IFS=$'\t' read -r label ev action; do
+        printf '  %-32s %-28s %s\n' "$label" "$ev" "$action"
+    done
+}
+
+case "${1:-}" in
+    install) cmd_install ;;
+    remove)  shift; cmd_remove "$@" ;;
+    status)  cmd_status ;;
+    -h|--help|"") usage; [ -n "${1:-}" ] || exit 2 ;;
+    *) echo "qs-yabai-signals: unknown command '$1'" >&2; usage >&2; exit 2 ;;
+esac

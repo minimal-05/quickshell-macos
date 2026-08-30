@@ -312,12 +312,22 @@ int launch(const LaunchArgs& args, char** argv, QCoreApplication* coreApplicatio
 	qs::ipc::IpcServer::start();
 	QsPaths::instance()->createLock();
 
-	auto root = RootWrapper(args.configPath, shellId);
-	QGuiApplication::setQuitOnLastWindowClosed(false);
+	// The QML root has to be torn down while the QGuiApplication is still alive.
+	// Every window runs QWindow::destroy() -> setVisible(false) on destruction, and
+	// QCocoaWindow::setVisible dereferences qApp->eventDispatcher() unconditionally.
+	// Once `delete app` has run that is null, so closing a window segfaults on the
+	// way out -- which macOS then reports as "quickshell quit unexpectedly".
+	auto code = 0;
 
-	exitDaemon(0);
+	{
+		auto root = RootWrapper(args.configPath, shellId);
+		QGuiApplication::setQuitOnLastWindowClosed(false);
 
-	auto code = QGuiApplication::exec();
+		exitDaemon(0);
+
+		code = QGuiApplication::exec();
+	}
+
 	delete app;
 	return code;
 }

@@ -1,31 +1,35 @@
 // Quickshell.Hyprland shim (macOS) — GlobalShortcut
 //
-// INERT with respect to hotkey registration.
+// REAL, via Carbon hot keys (Quickshell.Cocoa.Hotkeys).
 //
-// Upstream this speaks hyprland_global_shortcuts_v1, asking the compositor to
-// bind a key for it. macOS has no such protocol, and pure QML cannot call
-// Carbon's RegisterEventHotKey or -[NSEvent addGlobalMonitorForEventsMatching].
-// So nothing here ever registers a key combination: onPressed / onReleased will
-// not fire because a key was struck.
+// Upstream this speaks hyprland_global_shortcuts_v1: the compositor owns the
+// key, the shell only learns its name was triggered. macOS has no such protocol,
+// so the Hotkeys singleton registers the chord itself with RegisterEventHotKey
+// and reports presses and releases per `appid:name`. Which chord a name gets is
+// the table in src/cocoa/shortcuts.json, overlaid by
+// ~/.config/quickshell-macos/shortcuts.json; a name with no chord there is
+// declared but never fires from the keyboard, same as a Hyprland config with no
+// `bind = ..., global, quickshell:name` line.
 //
-// BUT the object instantiates cleanly and keeps the whole upstream surface
-// (appid / name / description / triggerDescription / pressed() / released()),
-// which is the point — 27 files in end-4 declare one, and a missing type would
-// stop all of them loading.
+// DIFFERENCES FROM UPSTREAM: a bare modifier (SUPER hold for workspaceNumber)
+// cannot be a hot key, so those names stay IPC-only; a chord skhd also binds is
+// left to skhd (see Hotkeys). As upstream, appid and name are read once, when
+// the object completes.
 //
-// WIRING IT UP FOR REAL (skhd route, skhd is already installed here):
-// each instance publishes its own Quickshell IPC target, so a keybind can fire
-// it from outside the process. Target name is `gs_<appid>_<name>` with every
-// character outside [A-Za-z0-9_] replaced by "_". For
-//     GlobalShortcut { name: "panelFamilyCycle" }   // appid defaults "quickshell"
-// the target is `gs_quickshell_panelFamilyCycle`, and ~/.skhdrc gets:
-//     cmd - a : qs ipc call gs_quickshell_panelFamilyCycle press
-// `press` emits pressed() then released(); `down` and `up` emit them
-// separately, for shortcuts that care about hold-to-show behaviour.
-// Run `qs ipc show` against a live config to list every registered target.
+// IPC ROUTE, kept for scripts and for the names that have no chord: each
+// instance answers on `gs_<appid>_<name>` (every character outside
+// [A-Za-z0-9_] replaced by "_"), so
+//     qs ipc call gs_quickshell_panelFamilyCycle press
+// emits pressed() then released(); `down` and `up` emit them separately.
+//
+// Hyprland.dispatch('hl.dsp.global("appid:name")') reaches the instance in
+// this process directly: each one registers itself in Hyprland.shortcuts
+// under "appid:name" while it exists, so the launcher's `wallpaper` action
+// fires without a round trip through qs-ipc.
 
 import QtQuick
 import Quickshell.Io
+import Quickshell.Cocoa as Cocoa
 
 QtObject {
     id: root
@@ -43,7 +47,6 @@ QtObject {
     property string triggerDescription: ""
 
     /// Emitted when the shortcut is triggered.
-    /// On macOS this only ever comes from the IPC target described above.
     signal pressed
 
     /// Emitted when the shortcut's key is released.
@@ -51,6 +54,60 @@ QtObject {
 
     /// The IPC target this instance answers on. Empty while `name` is unset.
     readonly property string ipcTarget: root.name.length === 0 ? "" : ("gs_" + root.appid + "_" + root.name).replace(/[^A-Za-z0-9_]/g, "_")
+
+    // What was registered, so a later change to appid/name (unsupported
+    // upstream too) cannot leave a registration behind.
+    property var _bound: null
+
+    readonly property string _key: root.appid + ":" + root.name
+
+    // The in-process registry hl.dsp.global() looks up; kept alongside the
+    // Carbon binding so a dispatch from QML never has to spawn qs-ipc.
+    function _register(): void {
+        if (root.name.length === 0)
+            return;
+        const all = Hyprland.shortcuts;
+        all[root._key] = root;
+        Hyprland.shortcuts = all;
+    }
+
+    function _unregister(): void {
+        const all = Hyprland.shortcuts;
+        if (all[root._key] === root) {
+            delete all[root._key];
+            Hyprland.shortcuts = all;
+        }
+    }
+
+    Component.onCompleted: {
+        if (root.name.length === 0)
+            return;
+        root._bound = [root.appid, root.name];
+        Cocoa.Hotkeys.bind(root.appid, root.name);
+        root._register();
+    }
+
+    on_KeyChanged: root._register()
+
+    Component.onDestruction: {
+        if (root._bound !== null)
+            Cocoa.Hotkeys.unbind(root._bound[0], root._bound[1]);
+        root._unregister();
+    }
+
+    readonly property Connections _keys: Connections {
+        target: Cocoa.Hotkeys
+
+        function onPressed(appid: string, name: string) {
+            if (root._bound !== null && appid === root._bound[0] && name === root._bound[1])
+                root.pressed();
+        }
+
+        function onReleased(appid: string, name: string) {
+            if (root._bound !== null && appid === root._bound[0] && name === root._bound[1])
+                root.released();
+        }
+    }
 
     readonly property IpcHandler _ipc: IpcHandler {
         target: root.ipcTarget

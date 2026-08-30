@@ -1,0 +1,17 @@
+#!/bin/bash
+# pidof(1) for macOS, which has no such command. BSD pgrep takes a regex, not a
+# list of names, so each argument is matched exactly and the pids joined on one
+# line the way pidof prints them.
+set -uo pipefail
+pids=""
+for name in "$@"; do
+    found=$(pgrep -x "$name" 2>/dev/null | tr '\n' ' ')
+    # A python/bash daemon (hyprsunset) reports its interpreter as the
+    # process name, so also accept a script path ending in the name -- but not
+    # a bare word in some other command's arguments, hence the (^|/) anchor.
+    [ -n "$found" ] || found=$(pgrep -f "(^|/)$name( |\$)" 2>/dev/null | grep -v "^$$\$" | tr '\n' ' ')
+    pids+="$found"
+done
+pids="$(printf '%s' "$pids" | xargs 2>/dev/null || true)"
+[ -n "$pids" ] || exit 1
+printf '%s\n' "$pids"

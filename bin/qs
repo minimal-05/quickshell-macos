@@ -1,0 +1,48 @@
+#!/bin/bash
+# The Quickshell command, and the only file in bin/ that is not a symlink onto
+# it. Everything runs through it: end-4's QML (which calls `qs` by bare name),
+# skhd and karabiner (bin/qs-ipc), launchd (bin/qs-start), and the tools.
+#
+#   qs                      run the default config
+#   qs -c mine              run ~/.config/quickshell/mine/shell.qml
+#   qs -p ~/some/shell.qml  run a config by path
+#   qs ipc call bar toggle  talk to the running shell
+#   qs hyprctl monitors     run a tool from Quickshell.app
+#   qs --tools              list those tools
+#   hyprctl monitors        the same tool through its symlink, bin/hyprctl -> qs
+#
+# All of that is the Mach-O's own doing (src/launch/tools.cpp): it sets the
+# environment, resolves the config and dispatches tools on the name it was
+# started under. This script only carries that name across -- `exec -a` hands
+# it argv[0] = hyprctl when the symlink bin/hyprctl was what ran -- and stays
+# a script rather than a symlink because NSBundle resolves the bundle from the
+# executable's real path: a symlink outside Quickshell.app would leave the
+# process with no bundle, and TCC with nothing to key its grants on.
+#
+# Committed, unlike the symlinks (qs-bundle generates them, bin/.gitignore
+# hides them), so a fresh checkout has the one command before anything is built.
+
+set -u
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+EXE="$ROOT/Quickshell.app/Contents/MacOS/quickshell"
+name="$(basename "$0")"
+
+if [ -x "$EXE" ]; then
+    # The shell itself keeps the executable's path as argv[0], as it always
+    # ran: ps -o comm, yabai's app rules and the notify bridge read the
+    # process name from it. Only a tool's name travels.
+    [ "$name" = qs ] && exec "$EXE" "$@"
+    exec -a "$name" "$EXE" "$@"
+fi
+
+# No bundle yet: a fresh checkout. The build tools still have to run, so they
+# come from the source tree; nothing else is meant to work before qs-build.
+if [ "$name" = qs ] && [ $# -gt 0 ] && [ -f "$ROOT/src/tools/$1" ]; then
+    name="$1"; shift
+fi
+if [ "$name" != qs ] && [ -f "$ROOT/src/tools/$name" ] && [ -x "$ROOT/src/tools/$name" ]; then
+    exec "$ROOT/src/tools/$name" "$@"
+fi
+echo "qs: no $EXE yet -- run bin/qs qs-build first" >&2
+exit 1

@@ -1,0 +1,54 @@
+#!/bin/bash
+# loginctl(1) / systemctl(1) / reboot(8) stand-in for the macOS port.
+#
+#   loginctl [--dry-run] lock-session | suspend | poweroff | reboot |
+#            terminate-user | terminate-session | kill-session | logout
+#   systemctl [--dry-run] suspend | poweroff | reboot        (systemctl execs this)
+#   reboot [--dry-run]                                        (reboot execs this)
+#
+# Only the verbs end-4's Session.qml uses. Anything else (hibernate,
+# --firmware-setup, unit management) prints "not supported on macOS" and exits 1
+# so `systemctl X || loginctl X` chains fall through and fail visibly.
+#
+# lock-session: the shell's own lock screen is raised over IPC, then the
+# display is put to sleep, which is what macOS itself does for "Lock Screen"
+# when "require password after sleep" is on. QS_LOCK=screensaver or
+# QS_LOCK=cgsession pick the ScreenSaverEngine / fast-user-switch login window
+# instead. Shutdown, restart and logout go through System Events so open apps
+# get their normal "save changes?" prompts.
+set -uo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DRY=0
+[ "${1:-}" = "--dry-run" ] && { DRY=1; shift; }
+[ "${1:-}" = "-n" ] && { DRY=1; shift; }
+verb="${1:-}"
+shift || true
+
+run() {
+    if [ "$DRY" -eq 1 ]; then printf '%s\n' "$*"; else eval "$@"; fi
+}
+
+case "$verb" in
+    -h|--help|"")
+        sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    lock-session|lock)
+        case "${QS_LOCK:-display}" in
+            screensaver) run "open -a ScreenSaverEngine" ;;
+            cgsession)   run "'/System/Library/CoreServices/Menu Extras/User.menu/Contents/Resources/CGSession' -suspend" ;;
+            *)           run "'$HERE/qs-ipc' lock activate >/dev/null 2>&1; pmset displaysleepnow" ;;
+        esac ;;
+    suspend|sleep)
+        run "pmset sleepnow" ;;
+    poweroff|shutdown|halt)
+        run "osascript -e 'tell application \"System Events\" to shut down'" ;;
+    reboot|restart)
+        if [ "${1:-}" = "--firmware-setup" ]; then
+            echo "loginctl: reboot --firmware-setup is not supported on macOS (hold the power button at boot for Startup Options)" >&2; exit 1
+        fi
+        run "osascript -e 'tell application \"System Events\" to restart'" ;;
+    terminate-user|terminate-session|kill-session|logout)
+        run "osascript -e 'tell application \"System Events\" to log out'" ;;
+    *)
+        echo "loginctl: '$verb' is not supported on macOS" >&2; exit 1 ;;
+esac

@@ -14,10 +14,15 @@
 /.envrc
 /.direnv/
 
-# macOS fork: build artifacts and third-party config
-/bin/quickshell
-/bin/qs
-/bin/__pycache__
+# macOS fork: build artifacts.
+# Quickshell.app is generated in full by qs-bundle (Info.plist from
+# assets/Quickshell.plist, the Mach-O, the tools compiled or copied from
+# src/tools/, the signature). bin/'s symlinks are covered by bin/.gitignore;
+# bin/qs itself is the committed entry point, not a generated wrapper.
+/Quickshell.app/
 /shell
 /proof-*.png
 .DS_Store
+
+# qs-perf appends one line per run; local measurement log, not shared history.
+tests/perf-history.jsonl

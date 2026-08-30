@@ -1,0 +1,82 @@
+#!/bin/bash
+# Drive the hover probe and print a pass/fail table.
+#
+# Answers, deterministically and in a few seconds, the question screenshots kept
+# getting wrong: does a shell panel actually see the pointer enter and leave?
+#
+#   qs-probe            run the standard enter/leave sequence
+#   qs-probe --keep     leave the probe running afterwards
+#   qs-probe --watch [secs]   print hover state live while a human moves the pointer
+#
+# The instance lifecycle (start, wait for "Configuration Loaded", kill only
+# that pid, refuse live roots) is qs-test's; this script only sequences the
+# pointer moves and the ipc questions and prints the same table it always has.
+
+set -uo pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# The checkout: two levels up from src/tools, four from inside the bundle.
+ROOT="${HERE%/Quickshell.app/Contents/Resources/tools}"; ROOT="${ROOT%/src/tools}"
+QS="$ROOT/Quickshell.app/Contents/MacOS/quickshell"
+export PATH="$ROOT/bin:/opt/homebrew/bin:$PATH"
+# The binary sets these itself, but QS_BINARY may name a bare build/src one
+# outside any bundle, which cannot find the shims from its own path.
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp/quickshell-$UID}"
+export QML2_IMPORT_PATH="$ROOT/shims${QML2_IMPORT_PATH:+:$QML2_IMPORT_PATH}"
+
+WARP="$HERE/warp.py"
+LOG=/tmp/qs-probe.log
+# This bundle's binary by default. QS_BINARY points a run at another build
+# (qs-test honours the same variable).
+BINARY="${QS_BINARY:-$QS}"
+PROBE_QML="${QS_PROBE_QML:-$ROOT/tests/hoverprobe.qml}"
+
+PID="$("$HERE/qs-test" "$PROBE_QML" --binary "$BINARY" --log "$LOG" --shell)" \
+    || { echo "probe failed to start; see $LOG" >&2; exit 1; }
+stop() { kill "$PID" 2>/dev/null; }
+
+# Addressed by config path, the way qs-test does: the probe root has its own
+# basename, so this reaches that instance and nothing else.
+ask() { "$BINARY" -p "$PROBE_QML" ipc call probe "$1" 2>/dev/null | tr -d '\r\n'; }
+move() { /usr/bin/python3 "$WARP" "$1" "$2" >/dev/null 2>&1; sleep 0.6; }
+
+pass=0; fail=0
+check() {  # $1 = label, $2 = expected, $3 = actual
+    if [ "$2" = "$3" ]; then printf '  PASS  %-34s %s\n' "$1" "$3"; pass=$((pass+1))
+    else printf '  FAIL  %-34s got %-9s want %s\n' "$1" "$3" "$2"; fail=$((fail+1)); fi
+}
+
+if [ "${1:-}" = "--watch" ]; then
+    # Hover is the one thing synthetic input cannot exercise: CGEvent moves do
+    # relocate the cursor and do drive yabai, but they never reach an inactive
+    # accessory process's window, so Qt's hover never fires (verified: enter=0
+    # for both borderless and focusable panels). Real input is the only way, so
+    # make asking the human cheap: a green strip appears at the top of the
+    # screen; sweep the pointer on and off it.
+    secs="${2:-15}"
+    echo "  Move the pointer onto the green strip at the top, then off it."
+    echo "  Watching for ${secs}s..."
+    ask reset >/dev/null
+    end=$(( $(date +%s) + secs ))
+    last=""
+    while [ "$(date +%s)" -lt "$end" ]; do
+        now="$(ask hover) $(ask events)"
+        [ "$now" != "$last" ] && { printf '   %s\n' "$now"; last="$now"; }
+        sleep 0.25
+    done
+    echo "  final: $(ask events)"
+    stop
+    exit 0
+fi
+
+ask reset >/dev/null
+move 840 600; check "pointer off panel"        outside "$(ask hover)"
+move 400 20;  check "pointer on panel"         inside  "$(ask hover)"
+move 840 600; check "pointer moved to a window" outside "$(ask hover)"
+move 400 20;  check "back on panel"            inside  "$(ask hover)"
+move 1500 900; check "far corner"              outside "$(ask hover)"
+
+echo "  events: $(ask events)"
+echo "  $pass passed, $fail failed"
+
+[ "${1:-}" = "--keep" ] || stop
+exit $([ "$fail" -eq 0 ] && echo 0 || echo 1)

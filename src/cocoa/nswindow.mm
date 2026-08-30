@@ -3,7 +3,14 @@
 #import <AppKit/AppKit.h>
 #import <QuartzCore/QuartzCore.h>
 
+#include <sys/sysctl.h>
+
+#include <cstring>
+#include <vector>
+
+#include <qelapsedtimer.h>
 #include <qhash.h>
+#include <qlogging.h>
 #include <qtypes.h>
 #include <qwindowdefs.h>
 
@@ -14,11 +21,101 @@ namespace {
 struct PanelConfig {
 	PanelLayer layer = PanelLayer::Top;
 	bool focusable = false;
+	/// See setPanelInputEnabled.
+	bool acceptsInput = true;
 };
 
 QHash<WId, PanelConfig>& panelConfigs() {
 	static QHash<WId, PanelConfig> configs;
 	return configs;
+}
+
+/// How long a cooperative activation request is given to land before the
+/// deprecated one is used instead. Activation is asynchronous, and a granted
+/// request lands within a frame; a refused one never does (measured: still
+/// not frontmost 1.5s later), so this is the whole cost of trying it first.
+constexpr auto ACTIVATION_GRACE_NS = int64_t(50) * NSEC_PER_MSEC;
+
+/// The application that was frontmost when a focusable panel took focus, so it
+/// can be handed back on close. Stored as a pid to avoid holding a strong
+/// reference to another process's NSRunningApplication.
+pid_t& previousFrontmostPid() {
+	static pid_t pid = 0;
+	return pid;
+}
+
+/// Set while a panel has asked for activation and not yet given it back, so an
+/// activation that arrives without one can be told apart from a requested one.
+bool& activationRequested() {
+	static auto requested = false;
+	return requested;
+}
+
+/// Whoever was frontmost when this process was loaded, before Qt had a chance
+/// to activate it. Read from a static initialiser: by the time any of our
+/// code runs on purpose, Qt's cocoa plugin has already made the process a
+/// regular application and LaunchServices has already brought it to front.
+pid_t& frontmostAtLaunch() {
+	static pid_t pid = 0;
+	return pid;
+}
+
+__attribute__((constructor)) void recordFrontmostAtLaunch() {
+	auto* app = NSWorkspace.sharedWorkspace.frontmostApplication;
+	if (app != nil && app.processIdentifier != getpid()) frontmostAtLaunch() = app.processIdentifier;
+}
+
+void logActivation(const char* what, pid_t pid, NSWindow* window) {
+	qInfo("cocoa: activation %s pid=%d frontmost=%d active=%d visible=%d canKey=%d key=%d", what,
+	      (int) pid, (int) NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier,
+	      (int) NSApp.isActive, (int) window.isVisible, (int) window.canBecomeKeyWindow,
+	      (int) window.isKeyWindow);
+}
+
+/// Hand activation to @p pid. On macOS 14 an application activates only when
+/// the active one yields to it, which is what the yield does; the request that
+/// follows is then honoured rather than deferred. Returns false if the app is
+/// gone.
+bool handActivationTo(pid_t pid) {
+	auto* app = [NSRunningApplication runningApplicationWithProcessIdentifier:pid];
+	if (app == nil || app.terminated) return false;
+
+	if (@available(macOS 14.0, *)) {
+		[NSApp yieldActivationToApplication:app];
+	}
+
+	return [app activateWithOptions:0];
+}
+
+/// Activation that arrived while no panel had asked for it.
+///
+/// Qt's cocoa plugin turns a command-line-launched process into a regular
+/// application as it starts, and LaunchServices then brings it to front --
+/// so a shell took the keyboard away from whatever the user was typing into
+/// the moment it launched, before the first panel existed and switched the
+/// policy back to accessory. The activation lands after that switch, which is
+/// why it is caught here rather than in becomeShellProcess. Only the first
+/// one: later unrequested activations are the user clicking into a focusable
+/// panel, which is exactly what activation is for.
+void releaseStartupActivation() {
+	static auto handled = false;
+	if (handled || activationRequested()) return;
+	handled = true;
+
+	auto pid = frontmostAtLaunch();
+	if (pid != 0 && handActivationTo(pid)) {
+		logActivation("released at startup", pid, NSApp.keyWindow);
+	} else {
+		[NSApp deactivate];
+		logActivation("released at startup (deactivate)", pid, NSApp.keyWindow);
+	}
+}
+
+/// Whether panels are currently held inert because a screen capture owns the
+/// screen. See syncCaptureInertness.
+bool& captureInert() {
+	static auto inert = false;
+	return inert;
 }
 
 NSView* viewFor(WId view) { return view == 0 ? nil : reinterpret_cast<NSView*>(view); }
@@ -40,14 +137,22 @@ void applyConfig(WId view, const PanelConfig& config) {
 	auto* window = windowFor(view);
 	if (window == nil) return;
 
-	window.level = levelFor(config.layer);
+	// The costly writes below are skipped when they would change nothing. This
+	// runs for every panel on every application activation change, and opening
+	// the overlay activates the shell and closing it deactivates it -- so the
+	// common case is a dozen panels reconfigured to exactly what they already
+	// were. Reading a property is free; assigning level reorders the window
+	// server's list and assigning styleMask rebuilds the window's frame view.
+	auto level = levelFor(config.layer);
+	if (window.level != level) window.level = level;
 
 	// Sticky across spaces, unmoved by Mission Control, skipped by cmd-tab, and
 	// allowed over other applications' full screen spaces.
-	window.collectionBehavior = NSWindowCollectionBehaviorCanJoinAllSpaces
-	                          | NSWindowCollectionBehaviorStationary
-	                          | NSWindowCollectionBehaviorIgnoresCycle
-	                          | NSWindowCollectionBehaviorFullScreenAuxiliary;
+	auto behavior = NSWindowCollectionBehaviorCanJoinAllSpaces
+	              | NSWindowCollectionBehaviorStationary
+	              | NSWindowCollectionBehaviorIgnoresCycle
+	              | NSWindowCollectionBehaviorFullScreenAuxiliary;
+	if (window.collectionBehavior != behavior) window.collectionBehavior = behavior;
 
 	window.opaque = NO;
 	window.backgroundColor = NSColor.clearColor;
@@ -64,10 +169,14 @@ void applyConfig(WId view, const PanelConfig& config) {
 	// several times a second for as long as the pointer rests on the module.
 	// Taking moved events directly makes hover independent of focus entirely.
 	window.acceptsMouseMovedEvents = YES;
-	NSLog(@"[qs] cfg frame=%@ lvl=%ld a=%.2f vis=%d onscreen=%d style=0x%lx opaque=%d",
-	      NSStringFromRect(window.frame), (long) window.level, window.alphaValue,
-	      (int) window.isVisible, (int) window.occlusionState, (unsigned long) window.styleMask,
-	      (int) window.isOpaque);
+
+	// Nothing below reaches a panel while a screenshot is being composed. The
+	// tracking area installed further down is NSTrackingActiveAlways, so real
+	// pointer movement is delivered to it whatever is in front of the panel --
+	// taking the window out of AppKit's hit-testing is what actually stops it.
+	// The same switch is the panel's input mask (setPanelInputEnabled).
+	auto ignores = captureInert() || !config.acceptsInput;
+	if (window.ignoresMouseEvents != ignores) window.ignoresMouseEvents = ignores;
 
 	// acceptsMouseMovedEvents alone is not enough. Qt installs its own tracking
 	// area with NSTrackingActiveInActiveApp, so hover only works once something
@@ -118,7 +227,7 @@ void applyConfig(WId view, const PanelConfig& config) {
 	// becomesKeyOnlyIfNeeded does not cover this: it governs clicks, not a
 	// programmatic focus request. Panels that do want keys (the overview's search
 	// field, the sidebars) set keyboardFocus and are left alone.
-	if (!config.focusable) {
+	if (!config.focusable && window.styleMask != NSWindowStyleMaskBorderless) {
 		window.styleMask = NSWindowStyleMaskBorderless;
 	}
 }
@@ -266,6 +375,12 @@ void reapplyPanels() {
 	(void) notification;
 	qs::cocoa::reapplyPanels();
 }
+
+- (void)becameActive:(NSNotification*)notification {
+	(void) notification;
+	qs::cocoa::releaseStartupActivation();
+	qs::cocoa::reapplyPanels();
+}
 @end
 
 namespace qs::cocoa {
@@ -281,7 +396,7 @@ void ensureObserver() {
 	auto* center = NSNotificationCenter.defaultCenter;
 
 	[center addObserver:observer
-	           selector:@selector(reapply:)
+	           selector:@selector(becameActive:)
 	               name:NSApplicationDidBecomeActiveNotification
 	             object:nil];
 
@@ -301,25 +416,62 @@ void ensureObserver() {
 void registerPanel(WId view, PanelLayer layer, bool focusable) {
 	if (view == 0) return;
 
-	// A process that owns panels is a shell: no Dock icon, no menu bar, never
-	// the active application. A process that owns none is an ordinary window
-	// (settings, the welcome screen) and must stay a regular app, or the user
-	// has no menu bar to quit it from and their cmd-Q lands on the shell.
-	static auto policyApplied = false;
-	if (!policyApplied) {
-		policyApplied = true;
-		setAccessoryActivationPolicy();
-		stripQuitKeyEquivalent();
-	}
-
+	becomeShellProcess();
 	ensureObserver();
 
 	auto config = PanelConfig {.layer = layer, .focusable = focusable};
+
+	// Re-registration (a flag change, a new level) must not flip the input
+	// switch back on under a pointer that is outside the mask.
+	if (auto existing = panelConfigs().find(view); existing != panelConfigs().end()) {
+		config.acceptsInput = existing->acceptsInput;
+	}
+
 	panelConfigs().insert(view, config);
 	applyConfig(view, config);
 }
 
-bool processOwnsPanels() { return !panelConfigs().isEmpty(); }
+void setPanelInputEnabled(WId view, bool enabled) {
+	auto config = panelConfigs().find(view);
+	if (config == panelConfigs().end() || config->acceptsInput == enabled) return;
+
+	config->acceptsInput = enabled;
+
+	auto* window = windowFor(view);
+	if (window == nil) return;
+
+	auto ignores = captureInert() || !enabled;
+	if (window.ignoresMouseEvents != ignores) window.ignoresMouseEvents = ignores;
+}
+
+namespace {
+bool& shellProcess() {
+	static auto shell = false;
+	return shell;
+}
+} // namespace
+
+// Sticky: a hidden panel releases its native window (see
+// CocoaPanelWindow::releaseHiddenGraphics), so the registry can be empty
+// between shows without the process having stopped being a shell.
+bool processOwnsPanels() { return shellProcess(); }
+
+void becomeShellProcess() {
+	// A process that owns panels is a shell: no Dock icon, no menu bar, never
+	// the active application. A process that owns none is an ordinary window
+	// (settings, the welcome screen) and must stay a regular app, or the user
+	// has no menu bar to quit it from and their cmd-Q lands on the shell.
+	if (shellProcess()) return;
+	shellProcess() = true;
+
+	setAccessoryActivationPolicy();
+	stripQuitKeyEquivalent();
+	ensureObserver();
+
+	// The activation Qt took at startup may already have landed; otherwise the
+	// observer catches it as it does.
+	if (NSApp.isActive) releaseStartupActivation();
+}
 
 void applyUndecoratedChrome(WId view) {
 	auto* window = windowFor(view);
@@ -329,9 +481,35 @@ void applyUndecoratedChrome(WId view) {
 	window.titleVisibility = NSWindowTitleHidden;
 	window.styleMask |= NSWindowStyleMaskFullSizeContentView;
 
-	// Dragging normally happens by the titlebar, which is now invisible, so let
-	// the window be dragged by its background instead.
-	window.movableByWindowBackground = YES;
+	// NOT movableByWindowBackground. AppKit decides on mouse-down, before Qt
+	// ever sees the event, that a drag in the "background" moves the window --
+	// and it considers Qt's content view background. That silently ate every
+	// drag gesture inside the window: dragging a file out of the file manager
+	// moved the window instead of starting a drag, and the window wandered off
+	// on any stray click-drag. Moving a window is the window manager's job here
+	// (yabai, with a modifier held), which is also what a user expects when they
+	// are not holding that modifier.
+	window.movableByWindowBackground = NO;
+
+	// Put it back on screen if it is not. This window has no titlebar and is
+	// deliberately not movable by its background, so there is nothing to drag it
+	// by: one that comes up outside the visible frame -- a remembered position
+	// from a display that is gone, a size that no longer fits -- stays there for
+	// good, which is exactly how the settings window ended up unreachable. Only
+	// the origin moves, and only when it is actually out of bounds.
+	if (auto* screen = window.screen ?: NSScreen.mainScreen; screen != nil) {
+		auto visible = screen.visibleFrame;
+		auto frame = window.frame;
+
+		// fmin before fmax, so a window wider or taller than the screen lands at
+		// the top left corner rather than being pushed off the other edge.
+		auto x = fmax(NSMinX(visible), fmin(frame.origin.x, NSMaxX(visible) - frame.size.width));
+		auto y = fmax(NSMinY(visible), fmin(frame.origin.y, NSMaxY(visible) - frame.size.height));
+
+		if (x != frame.origin.x || y != frame.origin.y) {
+			[window setFrameOrigin:NSMakePoint(x, y)];
+		}
+	}
 
 	for (NSNumber* button in @[
 		     @(NSWindowCloseButton),
@@ -344,7 +522,115 @@ void applyUndecoratedChrome(WId view) {
 	}
 }
 
+void applyPopupChrome(WId view) {
+	auto* window = windowFor(view);
+	if (window == nil) return;
+
+	window.opaque = NO;
+	window.backgroundColor = NSColor.clearColor;
+	window.hasShadow = NO;
+
+	// Qt backs a popup with a QNSPanel but leaves out the one bit that lets a
+	// panel take a click without its application activating first. A shell is an
+	// accessory that never activates, so a press on a dock window preview went
+	// nowhere at all -- hover worked, because the pointer poller feeds Qt moves
+	// directly, but clicking did nothing. registerPanel() sets the same bit on
+	// panels, which is why their buttons have always been clickable.
+	if ([window isKindOfClass:[NSPanel class]]) {
+		auto* panel = static_cast<NSPanel*>(window);
+		panel.styleMask |= NSWindowStyleMaskNonactivatingPanel;
+
+		// An NSPanel hides itself when its application deactivates. This one's
+		// application is never active in the first place.
+		panel.hidesOnDeactivate = NO;
+	}
+
+	window.acceptsMouseMovedEvents = YES;
+}
+
+void focusPanel(WId view) {
+	auto* window = windowFor(view);
+	if (window == nil) return;
+	if (![window canBecomeKeyWindow]) {
+		logActivation("refused", 0, window);
+		return;
+	}
+
+	// Only the first panel to take focus records who had it: while the shell is
+	// already active, the frontmost application is the shell itself, and a
+	// second panel opening over the first must not overwrite the app the user
+	// actually came from.
+	auto* frontmost = NSWorkspace.sharedWorkspace.frontmostApplication;
+	auto foreign = frontmost != nil && frontmost.processIdentifier != getpid();
+	if (foreign && previousFrontmostPid() == 0) {
+		previousFrontmostPid() = frontmost.processIdentifier;
+	}
+
+	activationRequested() = true;
+
+	if (foreign || !NSApp.isActive) {
+		// macOS 14 cooperative activation first: -activate is granted when the
+		// system agrees the user meant it, and costs nothing when it is not.
+		//
+		// ponytail: it is not granted here. The user's hotkey reaches the shell as
+		// an IPC call from skhd, which is no user event as far as AppKit is
+		// concerned, so the process holds no activation right and the frontmost
+		// app has not yielded one -- measured: the panel was still not frontmost
+		// 1.5s later. The deprecated call still takes activation outright on
+		// macOS 14 and 15 and is the only public way for a hotkey-driven
+		// accessory to do so, so it stays as the fallback, applied only when the
+		// cooperative request has visibly not landed. Ceiling: macOS dropping the
+		// deprecated path. Upgrade: an activation right handed over by whatever
+		// delivers the hotkey, once there is a public API for that.
+		if (@available(macOS 14.0, *)) {
+			[NSApp activate];
+		}
+
+		dispatch_after(
+		    dispatch_time(DISPATCH_TIME_NOW, ACTIVATION_GRACE_NS),
+		    dispatch_get_main_queue(),
+		    ^{
+		      if (NSApp.isActive || !activationRequested()) return;
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+		      [NSApp activateIgnoringOtherApps:YES];
+#pragma clang diagnostic pop
+		      logActivation("taken (fallback)", previousFrontmostPid(), window);
+		    }
+		);
+	}
+
+	// Takes effect when the activation lands: an inactive application's key
+	// window is restored as it becomes active.
+	[window makeKeyWindow];
+	logActivation("taken", previousFrontmostPid(), window);
+}
+
+void unfocusPanel() {
+	activationRequested() = false;
+
+	auto pid = previousFrontmostPid();
+	if (pid == 0) return;
+	previousFrontmostPid() = 0;
+
+	// Nothing to give back if the user has already gone elsewhere: a click in
+	// another application activated it and deactivated the shell before the
+	// panel was told to close. Re-activating the app recorded at open would
+	// snatch the keyboard away from the one the user just chose.
+	if (!NSApp.isActive) return;
+
+	// Give the keyboard back, or closing the launcher leaves the user typing
+	// into a shell with nothing focused.
+	auto accepted = handActivationTo(pid);
+	logActivation(accepted ? "returned" : "return refused", pid, NSApp.keyWindow);
+}
+
 void unregisterPanel(WId view) { panelConfigs().remove(view); }
+
+bool anyMouseButtonHeld() {
+	// System-wide button state, whichever application the press went to.
+	return NSEvent.pressedMouseButtons != 0;
+}
 
 void setAccessoryActivationPolicy() {
 	[NSApplication.sharedApplication setActivationPolicy:NSApplicationActivationPolicyAccessory];
@@ -377,5 +663,112 @@ qreal screenTopSafeAreaInset(WId view) {
 
 	return screen.safeAreaInsets.top;
 }
+
+
+namespace {
+
+/// Two pollers ask this twenty times a second each, and the answer cannot change
+/// faster than a person can hit a hotkey.
+constexpr auto CAPTURE_CACHE_MS = 250;
+
+/// True if @p pid was started to wait on the user rather than to take a shot and
+/// exit.
+///
+/// Read from the argument vector, not from how long the process has been alive.
+/// The shell takes non-interactive shots of its own -- `screencapture -x -o
+/// -l<id>` per window for the dock's previews -- and blanking hover during one
+/// would kill the preview that hover just opened. Measured here, a window shot
+/// takes 130ms and a full screen one 240ms, so no lifetime threshold separates
+/// the two cases with any margin. The flags do, exactly.
+bool captureWaitsOnUser(pid_t pid) {
+	int mib[] = {CTL_KERN, KERN_PROCARGS2, pid};
+
+	auto size = size_t(0);
+	if (sysctl(mib, 3, nullptr, &size, nullptr, 0) != 0) return false;
+
+	auto buf = std::vector<char>(size);
+	if (sysctl(mib, 3, buf.data(), &size, nullptr, 0) != 0) return false;
+	if (size < sizeof(int)) return false;
+
+	// The block is argc, then the executable path, then NUL padding, then argc
+	// NUL-terminated arguments.
+	auto argc = 0;
+	memcpy(&argc, buf.data(), sizeof(argc));
+
+	auto* arg = buf.data() + sizeof(argc);
+	const auto* end = buf.data() + size;
+
+	while (arg < end && *arg != '\0') arg++;
+	while (arg < end && *arg == '\0') arg++;
+
+	for (auto i = 0; i < argc && arg < end; i++) {
+		auto* next = arg;
+		while (next < end && *next != '\0') next++;
+		if (next >= end) break;
+
+		// screencapture bundles its flags: the screenshot hotkeys run `-pdi` and
+		// `-pdiU`, while every shot the shell takes for itself is some combination
+		// of -x, -o, -t, -R and -l, with no i in any of them.
+		if (*arg == '-' && strchr(arg, 'i') != nullptr) return true;
+
+		arg = next + 1;
+	}
+
+	return false;
+}
+
+bool anyInteractiveCapture() {
+	int mib[] = {CTL_KERN, KERN_PROC, KERN_PROC_ALL, 0};
+
+	auto size = size_t(0);
+	if (sysctl(mib, 4, nullptr, &size, nullptr, 0) != 0) return false;
+
+	// Processes can start between sizing the table and reading it, so ask for
+	// room to spare rather than failing the whole poll with ENOMEM.
+	size += size / 8;
+	auto buf = std::vector<char>(size);
+	if (sysctl(mib, 4, buf.data(), &size, nullptr, 0) != 0) return false;
+
+	auto* procs = reinterpret_cast<kinfo_proc*>(buf.data());
+	for (auto i = size_t(0); i < size / sizeof(kinfo_proc); i++) {
+		auto& proc = procs[i].kp_proc;
+
+		// Exactly equal, not a prefix. The screenshot hotkey starts screencaptureui
+		// alongside screencapture, and that agent outlives the capture: cancelling
+		// cmd-shift-4 with escape leaves it running long after the crosshair is gone.
+		// A prefix match would go on seeing it and leave the whole shell unhoverable
+		// for as long as it lingers.
+		if (strcmp(proc.p_comm, "screencapture") != 0) continue;
+
+		if (captureWaitsOnUser(proc.p_pid)) return true;
+	}
+
+	return false;
+}
+
+} // namespace
+
+bool syncCaptureInertness() {
+	auto capturing = interactiveScreenCaptureActive();
+	if (capturing == captureInert()) return capturing;
+
+	captureInert() = capturing;
+	reapplyPanels();
+
+	return capturing;
+}
+
+bool interactiveScreenCaptureActive() {
+	static auto cached = false;
+	static auto age = QElapsedTimer();
+
+	if (age.isValid() && age.elapsed() < CAPTURE_CACHE_MS) return cached;
+
+	cached = anyInteractiveCapture();
+	age.start();
+
+	return cached;
+}
+
 
 } // namespace qs::cocoa

@@ -1,14 +1,25 @@
 // Quickshell.Hyprland shim (macOS) — Hyprland singleton
 //
 // Stands in for qs::hyprland::ipc::HyprlandIpcQml. There is no Hyprland and no
-// socket2 here; every fact comes from polling yabai:
+// socket2 here; every fact comes from yabai:
 //
 //   yabai -m query --displays  ->  monitors
 //   yabai -m query --spaces    ->  workspaces   (space index == workspace id)
-//   yabai -m query --windows   ->  toplevels
+//   yabai -m query --windows   ->  toplevels    (via ToplevelManager._rawWindows,
+//                                                so one query serves both shims)
+//
+// The queries run when yabai says something changed, not on a timer:
+// bin/qs-yabai-signals registers a yabai signal per event whose action
+// touches $XDG_RUNTIME_DIR/quickshell/yabai/<event>, and a kqueue watcher
+// (Quickshell.Cocoa.FileWatcher) turns the touch into a query
+// (ToplevelManager installs the signals and watches the window events; this
+// file watches the space and display ones). A 30 s poll is the safety net for
+// what no signal reports.
 //
 // yabai *queries* work with SIP fully enabled; only its space-manipulation
-// features need SIP disabled, and dispatch() avoids those.
+// features need SIP disabled, and dispatch() avoids those except where the
+// Hyprland semantics leave no choice (creating a workspace that does not
+// exist yet).
 //
 // REAL:  monitors, workspaces, toplevels, focusedMonitor, focusedWorkspace,
 //        activeToplevel, monitorFor(), refreshMonitors(), refreshWorkspaces(),
@@ -18,9 +29,10 @@
 //        sockets. usingLua is pinned false, which is also the correct answer:
 //        it makes consumer configs emit classic dispatcher strings, which are
 //        the only ones this shim can translate.
-// APPROXIMATED: rawEvent is synthesised by diffing polls rather than streamed,
-//        so it lags by up to one poll interval and only carries the handful of
-//        event names listed in HyprlandEvent.qml.
+// APPROXIMATED: rawEvent is synthesised by diffing successive queries rather
+//        than streamed, so it carries only the handful of event names listed
+//        in HyprlandEvent.qml, and arrives one query after the yabai signal
+//        (tens of milliseconds) rather than instantly.
 //
 // This file is intentionally self-contained: shims cannot import qs.services.
 
@@ -29,6 +41,8 @@ pragma Singleton
 import QtQuick
 import Quickshell
 import Quickshell.Io
+import Quickshell.Wayland
+import Quickshell.Cocoa
 
 Singleton {
     id: root
@@ -111,15 +125,17 @@ Singleton {
     }
 
     function refreshMonitors(): void {
-        displayQuery.running = true;
+        root.wantDisplays = true;
+        settle.restart();
     }
 
     function refreshWorkspaces(): void {
-        spaceQuery.running = true;
+        root.wantSpaces = true;
+        settle.restart();
     }
 
     function refreshToplevels(): void {
-        windowQuery.running = true;
+        ToplevelManager.refresh();
     }
 
     /// Execute a Hyprland dispatcher. Translated to yabai / macOS equivalents
@@ -143,7 +159,6 @@ Singleton {
             return; // deliberately a no-op
 
         Quickshell.execDetached(argv);
-        resettle.restart();
     }
 
 
@@ -170,7 +185,13 @@ Singleton {
                 if (ws === "r+1") return ["sh", "-c", "yabai -m space --focus next || yabai -m space --focus first"];
                 if (ws === "r-1") return ["sh", "-c", "yabai -m space --focus prev || yabai -m space --focus last"];
                 const idx = root.resolveWorkspaceIndex(ws);
-                return idx === null ? null : ["yabai", "-m", "space", "--focus", String(idx)];
+                if (idx === null) return null;
+                // Hyprland creates a workspace the moment something focuses
+                // it; macOS Spaces have to exist first. Creating one needs the
+                // scripting addition, so this is the one dispatch that does.
+                if (idx > root.rawSpaces.length)
+                    return ["sh", "-c", `while [ "$(yabai -m query --spaces | jq length)" -lt ${idx} ]; do yabai -m space --create || exit 1; done; yabai -m space --focus ${idx}`];
+                return ["yabai", "-m", "space", "--focus", String(idx)];
             }
 
             const win = windowId();
@@ -190,6 +211,13 @@ Singleton {
             return win === null ? ["yabai", "-m", "window", "--close"] : ["yabai", "-m", "window", win, "--close"];
         }
 
+        if (cmd.startsWith("hl.dsp.window.pin")) {
+            const win = windowId();
+            return win === null
+                ? ["yabai", "-m", "window", "--toggle", "sticky"]
+                : ["yabai", "-m", "window", win, "--toggle", "sticky"];
+        }
+
         if (cmd.startsWith("hl.dsp.window.move")) {
             const win = windowId();
             const ws = field("workspace");
@@ -200,15 +228,87 @@ Singleton {
                     ? ["yabai", "-m", "window", "--space", String(idx)]
                     : ["yabai", "-m", "window", win, "--space", String(idx)];
             }
-            return []; // free-positioning a window has no yabai equivalent
+
+            // Shim-only extension: `target` swaps two windows' slots. yabai
+            // refuses to free-position anything the tiling engine manages
+            // ("cannot move a managed window"), so warping onto the window
+            // already in the wanted slot is how a tiled window is repositioned.
+            const target = field("target");
+            if (target !== null) {
+                const tid = parseInt(target.replace(/^address:/, ""), 16);
+                if (win === null || isNaN(tid)) return null;
+                return ["yabai", "-m", "window", win, "--warp", String(tid)];
+            }
+
+            // Free positioning, which lands only for a floating window — the
+            // same windows Hyprland would have accepted this for.
+            const x = field("x");
+            const y = field("y");
+            if (x !== null && y !== null) {
+                const ax = Math.round(parseFloat(x));
+                const ay = Math.round(parseFloat(y));
+                if (isNaN(ax) || isNaN(ay)) return [];
+                const argv = ["yabai", "-m", "window"];
+                if (win !== null) argv.push(win);
+                return argv.concat(["--move", `abs:${ax}:${ay}`]);
+            }
+
+            return [];
         }
 
-        // Deliberate no-ops: macOS has no scratchpad workspace, no way to warp
-        // the cursor without an extra tool, and no compositor config to poke.
+        // Shim-only extension: resize by moving the bsp fence on a corner. yabai
+        // errors ("cannot locate a bsp node fence") rather than no-ops when the
+        // window has no fence on the named side, so fall back to the opposite
+        // corner — the same edit seen from the other side of the split. Works
+        // for floating windows too, and on an inactive space yabai records the
+        // change and applies it when that space is next shown.
+        if (cmd.startsWith("hl.dsp.window.resize")) {
+            const win = windowId();
+            if (win === null) return null;
+
+            const dw = parseInt(field("dw") ?? "0", 10);
+            const dh = parseInt(field("dh") ?? "0", 10);
+            if (isNaN(dw) || isNaN(dh)) return null;
+            if (dw === 0 && dh === 0) return [];
+
+            return ["sh", "-c",
+                `yabai -m window ${win} --resize bottom_right:${dw}:${dh} `
+                + `|| yabai -m window ${win} --resize top_left:${-dw}:${-dh}`];
+        }
+
+        // Upstream this asks the compositor to fire a registered global
+        // shortcut. The shortcut objects live in this process, so fire them
+        // directly; one registered by another instance (the settings window
+        // poking the shell) goes through its IPC target instead.
+        if (cmd.startsWith("hl.dsp.global")) {
+            const m = cmd.match(/hl\.dsp\.global\s*\(\s*"([^"]*)"/);
+            if (!m) return null;
+            const colon = m[1].indexOf(":");
+            const appid = colon === -1 ? "quickshell" : m[1].slice(0, colon);
+            const name = colon === -1 ? m[1] : m[1].slice(colon + 1);
+            const local = root.shortcuts[appid + ":" + name];
+            if (local) {
+                local.pressed();
+                local.released();
+                return [];
+            }
+            return ["qs-ipc", ("gs_" + appid + "_" + name).replace(/[^A-Za-z0-9_]/g, "_"), "press"];
+        }
+
+        // Cursor moves go through a posted mouse event (bin/warp.py): a bare
+        // CGWarpMouseCursorPosition relocates the pointer without telling
+        // any window, so hover would not update.
+        if (cmd.startsWith("hl.dsp.cursor.move")) {
+            const x = field("x");
+            const y = field("y");
+            return (x === null || y === null) ? null : ["warp.py", x, y];
+        }
+
+        // Deliberate no-ops: macOS has no scratchpad workspace and no
+        // compositor config to poke.
         if (cmd.startsWith("hl.dsp.workspace.toggle_special")) return [];
         if (cmd.startsWith("hl.dsp.cursor")) return [];
         if (cmd.startsWith("hl.config")) return [];
-        if (cmd.startsWith("hl.dsp.global")) return [];
 
         return null;
     }
@@ -368,7 +468,9 @@ Singleton {
     /// or null when it cannot be expressed.
     function resolveWorkspaceIndex(arg: string): var {
         const a = String(arg ?? "").trim();
-        const count = root.workspaces.values.length;
+        // Every Space counts here, including the empty ones `workspaces`
+        // leaves out, because yabai indexes them all.
+        const count = root.rawSpaces.length;
         const current = root.focusedWorkspace ? root.focusedWorkspace.id : 1;
 
         const abs = a.match(/^\d+$/);
@@ -451,22 +553,34 @@ Singleton {
 
     property var rawDisplays: []
     property var rawSpaces: []
+    /// Mirror of ToplevelManager._rawWindows; that shim runs the window query.
     property var rawWindows: []
     property var eventObject: null
 
-    /// Raw text of the last poll of each query. Polls that return byte-identical
-    /// output are dropped before rebuild(), because reassigning `values` on
-    /// every tick makes animating bar delegates flicker — the same guard
-    /// Spaces.qml uses.
+    /// GlobalShortcut instances of this process, keyed "appid:name", so
+    /// `hl.dsp.global(...)` can fire them without leaving the process.
+    /// GlobalShortcut.qml registers and unregisters itself here.
+    property var shortcuts: ({})
+
+    /// Raw text of the last result of each query. Results that are
+    /// byte-identical to the previous one are dropped before rebuild(),
+    /// because reassigning `values` needlessly makes animating bar delegates
+    /// flicker — the same guard Spaces.qml uses.
     property string lastDisplayText: ""
     property string lastSpaceText: ""
-    property string lastWindowText: ""
 
     /// Last-seen values, for synthesising events.
     property string lastEventWorkspace: ""
     property string lastEventMonitor: ""
     property string lastEventWindow: ""
     property var lastEventAddresses: []
+    /// Last window reported focused. Held while quickshell's own windows have
+    /// focus — see the sticky note in rebuild().
+    property string lastActiveAddress: ""
+
+    /// Shim-only: how many space/display queries have run, so a test can
+    /// prove an idle instance spawns nothing.
+    property int _queries: 0
 
     function emitEvent(name: string, data: string): void {
         if (!root.eventObject)
@@ -525,6 +639,13 @@ Singleton {
     }
 
     function rebuild(): void {
+        // The three queries land in any order. Rebuilding on the first one
+        // would publish an empty monitor list, destroy the seeded monitors
+        // every consumer already holds, and re-create them a moment later
+        // (with a monitorremoved/monitoradded pair nobody asked for).
+        if (root.lastDisplayText.length === 0 || root.lastSpaceText.length === 0)
+            return;
+
         // ---- monitors ----
         const screens = Quickshell.screens;
         const oldMonitors = root.monitors.values.slice();
@@ -580,6 +701,14 @@ Singleton {
         const newWorkspaces = [];
         const workspaceLookup = {};
         for (const s of root.rawSpaces) {
+            // A Hyprland workspace exists only while it holds a window or is
+            // shown on a monitor; every macOS Space exists all the time.
+            // Publishing the empty hidden ones too made every bar mark all
+            // ten as occupied. dispatch() still counts them via rawSpaces.
+            const occupied = Array.isArray(s.windows) && s.windows.length > 0;
+            if (!occupied && s["is-visible"] !== true)
+                continue;
+
             let ws = workspaceById[s.index];
             if (!ws) {
                 ws = root.workspaceComponent.createObject(root, {
@@ -650,12 +779,31 @@ Singleton {
 
         root.focusedMonitor = newMonitors.find(m => m.focused) ?? (newMonitors.length > 0 ? newMonitors[0] : null);
         root.focusedWorkspace = newWorkspaces.find(w => w.focused) ?? null;
-        root.activeToplevel = newToplevels.find(t => t.activated) ?? null;
+
+        // Sticky hold, same as ToplevelManager: when one of quickshell's own
+        // windows takes focus yabai reports no window as `has-focus`, and
+        // activeToplevel would flap to null every time the user touches the
+        // bar. The last active window is held until a different one wins.
+        let active = newToplevels.find(t => t.activated);
+        if (active === undefined && root.lastActiveAddress.length > 0) {
+            active = newToplevels.find(t => t.address === root.lastActiveAddress);
+            if (active !== undefined)
+                active.activated = true;
+        }
+        root.lastActiveAddress = active !== undefined ? active.address : "";
+        root.activeToplevel = active ?? null;
 
         // ---- destroy orphans, after nothing points at them any more ----
         for (const key of goneMonitors) {
             root.emitEvent("monitorremoved", monitorById[key].name);
+            root.emitEvent("monitorremovedv2", key + "," + monitorById[key].name + "," + monitorById[key].description);
             monitorById[key].destroy();
+        }
+        for (const mon of newMonitors) {
+            if (oldMonitors.indexOf(mon) === -1) {
+                root.emitEvent("monitoradded", mon.name);
+                root.emitEvent("monitoraddedv2", mon.id + "," + mon.name + "," + mon.description);
+            }
         }
         for (const key of Object.keys(workspaceById))
             workspaceById[key].destroy();
@@ -711,11 +859,79 @@ Singleton {
         }
     }
 
+    // ------------------------------------------------------------------
+    // yabai signals -> signal files -> queries
+    // ------------------------------------------------------------------
+
+    /// The window query belongs to ToplevelManager, which installs the
+    /// signals and watches the window events; its result is mirrored here.
+    Connections {
+        target: ToplevelManager
+
+        function on_RawWindowsChanged(): void {
+            root.rawWindows = ToplevelManager._rawWindows;
+            root.rebuild();
+        }
+    }
+
+    /// The events that change the space or display queries. Everything
+    /// else only moves windows around, which ToplevelManager reports.
+    readonly property list<string> signalEvents: [
+        "space_changed", "space_created", "space_destroyed",
+        "display_added", "display_removed", "display_moved", "display_resized", "display_changed"
+    ]
+
+    readonly property string signalDir: {
+        const rt = Quickshell.env("XDG_RUNTIME_DIR");
+        return (typeof rt === "string" && rt.length > 0) ? rt + "/quickshell/yabai" : "";
+    }
+
+    property bool wantSpaces: false
+    property bool wantDisplays: false
+
+    function onYabaiSignal(event: string): void {
+        if (event.startsWith("display_"))
+            root.wantDisplays = true;
+        // Focus moving to another display also changes which space has focus.
+        root.wantSpaces = true;
+        settle.restart();
+    }
+
+    function runPending(): void {
+        if (root.wantDisplays && !displayQuery.running) {
+            root.wantDisplays = false;
+            root._queries++;
+            displayQuery.running = true;
+        }
+        if (root.wantSpaces && !spaceQuery.running) {
+            root.wantSpaces = false;
+            root._queries++;
+            spaceQuery.running = true;
+        }
+    }
+
+    FileWatcher {
+        directory: root.signalDir
+        files: root.signalEvents
+        onChanged: name => root.onYabaiSignal(name)
+    }
+
+    /// Collapses the burst of signals one user action produces into one
+    /// query of each kind.
+    Timer {
+        id: settle
+
+        interval: 10
+        repeat: false
+        onTriggered: root.runPending()
+    }
+
     Process {
         id: displayQuery
 
         running: true
         command: ["yabai", "-m", "query", "--displays"]
+        onRunningChanged: if (!running) Qt.callLater(root.runPending)
 
         stdout: StdioCollector {
             onStreamFinished: {
@@ -736,6 +952,7 @@ Singleton {
 
         running: true
         command: ["yabai", "-m", "query", "--spaces"]
+        onRunningChanged: if (!running) Qt.callLater(root.runPending)
 
         stdout: StdioCollector {
             onStreamFinished: {
@@ -745,70 +962,33 @@ Singleton {
                 if (value === null)
                     return;
                 root.lastSpaceText = text;
+
+                // A space moving to another display (`yabai -m space --display`)
+                // changes which display a monitor's activeWorkspace lives on,
+                // and yabai reports it under no display_* event.
+                const before = {};
+                for (const s of root.rawSpaces)
+                    before[s.index] = s.display;
+                if (root.rawSpaces.length > 0 && value.some(s => before[s.index] !== undefined && before[s.index] !== s.display))
+                    root.refreshMonitors();
+
                 root.rawSpaces = value;
                 root.rebuild();
             }
         }
     }
 
-    Process {
-        id: windowQuery
-
-        running: true
-        command: ["yabai", "-m", "query", "--windows"]
-
-        stdout: StdioCollector {
-            onStreamFinished: {
-                if (text === root.lastWindowText)
-                    return;
-                const value = root.parseJson(text);
-                if (value === null)
-                    return;
-                root.lastWindowText = text;
-                root.rawWindows = value;
-                root.rebuild();
-            }
-        }
-    }
-
-    /// Fast re-poll right after a dispatch, so the bar catches up immediately
-    /// instead of waiting out the normal interval.
+    /// Safety net for what no signal reports: yabai restarted without its
+    /// signals, a display macOS re-detected silently. The only spawns on an
+    /// idle desktop (ToplevelManager runs the matching window query).
     Timer {
-        id: resettle
-
-        interval: 120
-        repeat: false
+        interval: 30000
+        running: true
+        repeat: true
         onTriggered: {
+            root.refreshMonitors();
             root.refreshWorkspaces();
-            root.refreshToplevels();
         }
-    }
-
-    Timer {
-        id: spaceTimer
-
-        interval: 500
-        running: true
-        repeat: true
-        onTriggered: root.refreshWorkspaces()
-    }
-
-    Timer {
-        id: windowTimer
-
-        interval: 1000
-        running: true
-        repeat: true
-        onTriggered: root.refreshToplevels()
-    }
-
-    Timer {
-        id: displayTimer
-
-        interval: 5000
-        running: true
-        repeat: true
-        onTriggered: root.refreshMonitors()
     }
 }
 
@@ -845,6 +1025,20 @@ Singleton {
 //   exec CMD                            sh -c CMD
 //   exit                                no-op, logged (would log the user out)
 //   anything else                       no-op, logged
+//
+//   hl.dsp.focus({workspace=N})         yabai -m space --focus N, creating
+//                                       Spaces first when N > their count
+//   hl.dsp.window.move({target=..})     yabai -m window ID --warp TARGET (swap
+//                                       slots; shim-only)
+//   hl.dsp.window.move({x=..,y=..})     yabai -m window [ID] --move abs:X:Y
+//                                       (floating windows only)
+//   hl.dsp.window.resize({dw=..,dh=..}) yabai -m window ID --resize
+//                                       bottom_right:DW:DH, else top_left
+//                                       (shim-only)
+//   hl.dsp.window.pin({window=..})      yabai -m window [ID] --toggle sticky
+//   hl.dsp.global("appid:name")         the GlobalShortcut of this process, or
+//                                       qs-ipc gs_<appid>_<name> press
+//   hl.dsp.cursor.move({x=..,y=..})     warp.py X Y (a posted mouse event)
 //
 // Window selectors understood: `address:0xHEX` (hex of the yabai window id),
 // `class:`/`initialclass:` and `title:`/`initialtitle:` regexes resolved

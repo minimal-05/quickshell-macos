@@ -1,0 +1,67 @@
+#!/usr/bin/env python3
+"""Set a notification source's macOS alert style: none, banners or alerts.
+
+The shell mirrors macOS notifications into its own popup (bin/qs-notify-bridge),
+so anything macOS also draws a banner for is shown twice. The fix is to leave the
+notification enabled -- the bridge reads it out of Notification Center either way
+-- and only stop macOS from drawing its own banner, which is exactly what alert
+style "none" means.
+
+Some sources have no row in System Settings > Notifications at all. The low
+battery warning is one: it is a system UserNotifications bundle, not an app, so
+the only way to reach its alert style is the preference the settings pane writes,
+
+    ~/Library/Preferences/com.apple.ncprefs   apps[].flags   bits 3-4
+    0 = none, 1 = banners, 2 = alerts
+
+Read and written through `defaults export/import` rather than the file, so
+cfprefsd stays authoritative and does not write its cached copy back over ours.
+usernoted only reads the preference at startup, hence the killall.
+
+    qs-alert-style                     mute the low battery banner
+    qs-alert-style <bundle-id>         mute that source
+    qs-alert-style <bundle-id> alerts  put it back
+"""
+
+import plistlib
+import subprocess
+import sys
+
+LOW_BATTERY = "com.apple.controlcenter.notifications.low-battery"
+STYLES = {"none": 0, "banners": 1, "alerts": 2}
+
+bundle = sys.argv[1] if len(sys.argv) > 1 else LOW_BATTERY
+name = sys.argv[2] if len(sys.argv) > 2 else "none"
+
+if name not in STYLES:
+    sys.exit(f"unknown style {name!r}; want one of {', '.join(STYLES)}")
+style = STYLES[name]
+
+prefs = plistlib.loads(
+    subprocess.run(
+        ["defaults", "export", "com.apple.ncprefs", "-"],
+        capture_output=True,
+        check=True,
+    ).stdout
+)
+
+for app in prefs.get("apps", []):
+    if app.get("bundle-id") != bundle:
+        continue
+
+    old = app["flags"]
+    app["flags"] = (old & ~(0b11 << 3)) | (style << 3)
+    if app["flags"] == old:
+        print(f"{bundle}: already {name}")
+        break
+
+    subprocess.run(
+        ["defaults", "import", "com.apple.ncprefs", "-"],
+        input=plistlib.dumps(prefs),
+        check=True,
+    )
+    subprocess.run(["killall", "usernoted"], stderr=subprocess.DEVNULL)
+    print(f"{bundle}: {name}")
+    break
+else:
+    sys.exit(f"{bundle} has no notification settings; nothing to change")

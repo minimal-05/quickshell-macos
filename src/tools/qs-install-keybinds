@@ -1,0 +1,77 @@
+#!/bin/bash
+# Install the shell's keybindings.
+#
+#   qs-install-keybinds           seed ~/.config/quickshell-macos/shortcuts.json,
+#                                 put the skhd block in ~/.config/skhd/skhdrc
+#   qs-install-keybinds --remove  take the skhd block back out
+#
+# end-4 binds its actions to SUPER through Hyprland's global-shortcut protocol.
+# On macOS the shell registers those chords itself (Quickshell.Cocoa.Hotkeys,
+# Carbon RegisterEventHotKey) from the table in src/cocoa/shortcuts.json --
+# compiled in, so they work without this script -- overlaid by
+# ~/.config/quickshell-macos/shortcuts.json. This copies the default table
+# there once, as the file to edit; delete it to go back to the defaults.
+# ctrl+alt+cmd stands in for SUPER because that is the prefix the rest of your
+# skhdrc uses.
+#
+# skhd keeps only what is not a GlobalShortcut: opening the settings window.
+# Earlier versions wrote a `qs-ipc <target> toggle` line per action here; those
+# are stripped, because the shell leaves any chord skhdrc binds to skhd, and a
+# stale line would keep an action on the slow IPC path (or fire it twice).
+#
+# Nothing here touches your own bindings, and a backup is taken first.
+# Restart the shell afterwards: the chord table is read once at startup.
+
+set -uo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# The checkout: two levels up from src/tools, four from inside the bundle.
+# The bindings name bin/<tool>, the symlinks qs-bundle keeps stable.
+ROOT="${HERE%/Quickshell.app/Contents/Resources/tools}"; ROOT="${ROOT%/src/tools}"
+RC="${SKHD_RC:-$HOME/.config/skhd/skhdrc}"
+TABLE="${QS_SHORTCUTS:-$HOME/.config/quickshell-macos/shortcuts.json}"
+BEGIN="# --- quickshell bindings (managed by qs-install-keybinds) ---"
+END="# --- end quickshell bindings ---"
+
+[ -f "$RC" ] || { echo "no skhd config at $RC" >&2; exit 1; }
+
+strip_block() {
+    awk -v b="$BEGIN" -v e="$END" '
+        $0 == b { skip = 1 }
+        !skip   { print }
+        $0 == e { skip = 0 }
+    ' "$RC"
+}
+
+cp "$RC" "$RC.bak.$(date +%s)"
+
+if [ "${1:-}" = "--remove" ]; then
+    strip_block > "$RC.tmp" && mv "$RC.tmp" "$RC"
+    echo "removed quickshell bindings from $RC ($TABLE left alone)"
+else
+    if [ -f "$TABLE" ]; then
+        echo "kept $TABLE (delete it to reseed from $ROOT/src/cocoa/shortcuts.json)"
+    else
+        mkdir -p "$(dirname "$TABLE")"
+        cp "$ROOT/src/cocoa/shortcuts.json" "$TABLE"
+        echo "wrote $TABLE"
+    fi
+    strip_block > "$RC.tmp"
+    cat >> "$RC.tmp" <<EOF2
+$BEGIN
+ctrl + alt + cmd - i        : $ROOT/bin/qs-settings
+$END
+EOF2
+    mv "$RC.tmp" "$RC"
+    echo "added quickshell bindings to $RC"
+fi
+
+if pgrep -x skhd >/dev/null 2>&1; then
+    skhd --restart-service >/dev/null 2>&1 && echo "skhd reloaded"
+    sleep 2
+    LOG="/tmp/skhd_$USER.log"
+    if [ -s "$LOG" ] && tail -5 "$LOG" | grep -q "error"; then
+        echo "skhd reported a parse error — check $LOG" >&2
+        exit 1
+    fi
+fi

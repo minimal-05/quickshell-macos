@@ -1,0 +1,311 @@
+#!/usr/bin/env python3
+"""Measure what a quickshell instance costs over a window.
+
+    qs-perf [pid] [seconds]               table + one JSON line in tests/perf-history.jsonl
+    qs-perf --children [pid] [seconds]    histogram of child command lines seen
+
+Defaults: the live shell (the `quickshell -p .../shell.qml` process), 60 s.
+
+Why this exists: the shell's own CPU is a fraction of the bill. Most of it is
+in short-lived children (top, yabai, osascript, ...) that no process monitor
+attributes to it, and in interrupt wakeups that keep the machine out of idle.
+proc_pid_rusage() is the one kernel call that reports both: ri_child_* fields
+accumulate the CPU of every reaped child, ri_interrupt_wkups counts wakeups.
+Time fields are in mach absolute-time units, so they are scaled through
+mach_timebase_info (125/3 on Apple Silicon, 1/1 on Intel).
+
+Children are counted by sampling the process tree at 250 ms and de-duplicating
+by pid, so anything shorter than a sample can be missed: the spawns/s figure
+is a floor, the reaped-children CPU% is exact.
+
+Stdlib + ctypes only, on purpose: it has to run from a bare launchd PATH.
+"""
+
+import ctypes
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+from collections import Counter
+
+# The checkout: two levels up from src/tools, four from inside the bundle.
+ROOT = re.sub(r"/(Quickshell\.app/Contents/Resources/tools|src/tools)$", "",
+              os.path.dirname(os.path.realpath(__file__)))
+HISTORY = os.path.join(ROOT, "tests", "perf-history.jsonl")
+RUNTIME = os.environ.get("XDG_RUNTIME_DIR") or f"/tmp/quickshell-{os.getuid()}"
+# ponytail: 250 ms ps sampling is a floor -- a child that lives <250 ms
+# (grep, awk, jq) is usually missed, which is why this reads far below the
+# audit's 12-15 spawns/s. Ceiling: proves *which* long-lived spawns went away,
+# not the total. Upgrade path: kqueue EVFILT_PROC with NOTE_FORK|NOTE_EXEC|
+# NOTE_TRACK on the pid, which catches every exec regardless of lifetime.
+SAMPLE_S = 0.25
+# Same shape qs-reap kills: the perl interpreter running the script, not any argv that mentions it.
+ADAPTER = re.compile(r"^\S*/perl\s+\S*/media-control/mediaremote-adapter\.pl(\s|$)")
+
+
+# --- kernel accounting -------------------------------------------------------
+
+class RusageInfoV4(ctypes.Structure):
+    _fields_ = [("ri_uuid", ctypes.c_uint8 * 16)] + [
+        (name, ctypes.c_uint64) for name in (
+            "ri_user_time", "ri_system_time", "ri_pkg_idle_wkups",
+            "ri_interrupt_wkups", "ri_pageins", "ri_wired_size",
+            "ri_resident_size", "ri_phys_footprint", "ri_proc_start_abstime",
+            "ri_proc_exit_abstime", "ri_child_user_time",
+            "ri_child_system_time", "ri_child_pkg_idle_wkups",
+            "ri_child_interrupt_wkups", "ri_child_pageins",
+            "ri_child_elapsed_abstime", "ri_diskio_bytesread",
+            "ri_diskio_byteswritten", "ri_cpu_time_qos_default",
+            "ri_cpu_time_qos_maintenance", "ri_cpu_time_qos_background",
+            "ri_cpu_time_qos_utility", "ri_cpu_time_qos_legacy",
+            "ri_cpu_time_qos_user_initiated",
+            "ri_cpu_time_qos_user_interactive", "ri_billed_system_time",
+            "ri_serviced_system_time", "ri_logical_writes",
+            "ri_lifetime_max_phys_footprint", "ri_instructions", "ri_cycles",
+            "ri_billed_energy", "ri_serviced_energy",
+            "ri_interval_max_phys_footprint", "ri_runnable_time",
+        )
+    ]
+
+
+class MachTimebase(ctypes.Structure):
+    _fields_ = [("numer", ctypes.c_uint32), ("denom", ctypes.c_uint32)]
+
+
+_libc = ctypes.CDLL("/usr/lib/libSystem.B.dylib", use_errno=True)
+_libc.proc_pid_rusage.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_void_p]
+_libc.proc_pid_rusage.restype = ctypes.c_int
+_tb = MachTimebase()
+_libc.mach_timebase_info(ctypes.byref(_tb))
+ABS_TO_S = _tb.numer / _tb.denom / 1e9
+
+
+def rusage(pid):
+    info = RusageInfoV4()
+    if _libc.proc_pid_rusage(pid, 4, ctypes.byref(info)) != 0:  # RUSAGE_INFO_V4
+        err = ctypes.get_errno()
+        raise OSError(err, f"proc_pid_rusage({pid}): {os.strerror(err)}")
+    return info
+
+
+# --- process tree ------------------------------------------------------------
+
+def ps_table():
+    """[(pid, ppid, args)] for every process; one ps call per sample."""
+    out = subprocess.run(["ps", "-axo", "pid=,ppid=,args="],
+                         capture_output=True, text=True).stdout
+    rows = []
+    for line in out.splitlines():
+        parts = line.split(None, 2)
+        if len(parts) >= 2:
+            rows.append((int(parts[0]), int(parts[1]),
+                         parts[2] if len(parts) > 2 else ""))
+    return rows
+
+
+def descendants(rows, root):
+    kids = {}
+    for pid, ppid, args in rows:
+        kids.setdefault(ppid, []).append((pid, args))
+    seen, stack = {}, [(root, 0)]
+    while stack:
+        p, depth = stack.pop()
+        for pid, args in kids.get(p, []):
+            if pid not in seen:
+                seen[pid] = (depth + 1, args)
+                stack.append((pid, depth + 1))
+    return seen  # pid -> (depth, args)
+
+
+def live_shell_pid():
+    for pid, _, args in ps_table():
+        if re.search(r"quickshell(\.app/Contents/MacOS/quickshell)? -p \S+/shell\.qml$", args):
+            return pid
+    sys.exit("qs-perf: no live shell found (quickshell -p .../shell.qml); pass a pid")
+
+
+def quickshell_pids(rows):
+    return {pid for pid, _, args in rows
+            if re.match(r"\S*/quickshell(\.app/Contents/MacOS/quickshell)? -p ", args)}
+
+
+def orphan_adapters(rows):
+    """mediaremote-adapter.pl processes not parented to a live quickshell."""
+    qs = quickshell_pids(rows)
+    return [pid for pid, ppid, args in rows
+            if ADAPTER.match(args) and ppid not in qs]
+
+
+def dead_instance_dirs():
+    """by-pid entries whose pid is gone (the by-id dir behind them is dead too)."""
+    by_pid = os.path.join(RUNTIME, "quickshell", "by-pid")
+    if not os.path.isdir(by_pid):
+        return 0
+    dead = 0
+    for name in os.listdir(by_pid):
+        try:
+            os.kill(int(name), 0)
+        except ProcessLookupError:
+            dead += 1
+        except (ValueError, PermissionError):
+            pass
+    return dead
+
+
+# --- memory ------------------------------------------------------------------
+
+def footprint(pid):
+    """Physical footprint + the two graphics categories, in MB."""
+    res = {}
+    if os.path.exists("/usr/bin/footprint"):
+        out = subprocess.run(["/usr/bin/footprint", str(pid)],
+                             capture_output=True, text=True).stdout
+        m = re.search(r"Footprint:\s+([\d.]+)\s*(\w+)", out)
+        if m:
+            res["footprint_mb"] = to_mb(m.group(1), m.group(2))
+        for cat, key in (("IOAccelerator (graphics)", "ioaccel_mb"),
+                         ("IOSurface", "iosurface_mb")):
+            m = re.search(r"^\s*([\d.]+)\s*(\w+)\s+.*\s" + re.escape(cat) + r"\s*$", out, re.M)
+            if m:
+                res[key] = to_mb(m.group(1), m.group(2))
+    if "footprint_mb" not in res:
+        out = subprocess.run(["vmmap", "--summary", str(pid)],
+                             capture_output=True, text=True).stdout
+        m = re.search(r"Physical footprint:\s+([\d.]+)([KMG])", out)
+        if m:
+            res["footprint_mb"] = to_mb(m.group(1), m.group(2))
+        for cat, key in (("IOAccelerator (graphics)", "ioaccel_mb"),
+                         ("IOSurface", "iosurface_mb")):
+            m = re.search(r"^" + re.escape(cat) + r"\s+([\d.]+)([KMG])", out, re.M)
+            if m:
+                res[key] = to_mb(m.group(1), m.group(2))
+    return res
+
+
+def to_mb(num, unit):
+    scale = {"B": 1 / 2**20, "K": 1 / 1024, "KB": 1 / 1024, "M": 1, "MB": 1,
+             "G": 1024, "GB": 1024}.get(unit, 1)
+    return round(float(num) * scale, 1)
+
+
+def thread_count(pid):
+    out = subprocess.run(["ps", "-M", "-p", str(pid)], capture_output=True, text=True).stdout
+    return max(0, len(out.splitlines()) - 1)
+
+
+def fd_count(pid):
+    out = subprocess.run(["lsof", "-p", str(pid), "-Fn"], capture_output=True, text=True).stdout
+    return sum(1 for l in out.splitlines() if l.startswith("f"))
+
+
+# --- main --------------------------------------------------------------------
+
+def parse_args(argv):
+    children = "--children" in argv
+    argv = [a for a in argv if a != "--children"]
+    if any(a in ("-h", "--help") for a in argv):
+        print(__doc__.strip()); sys.exit(0)
+    pid = int(argv[0]) if argv else live_shell_pid()
+    secs = float(argv[1]) if len(argv) > 1 else 60.0
+    return children, pid, secs
+
+
+def watch(pid, secs):
+    """Sample the tree for `secs`; return rusage deltas and the children seen."""
+    r0 = rusage(pid)
+    t0 = time.monotonic()
+    seen = {}      # pid -> (depth, args)
+    while True:
+        rows = ps_table()
+        for cpid, (depth, args) in descendants(rows, pid).items():
+            seen.setdefault(cpid, (depth, args))
+        left = secs - (time.monotonic() - t0)
+        if left <= 0:
+            break
+        time.sleep(min(SAMPLE_S, left))
+    r1 = rusage(pid)
+    elapsed = time.monotonic() - t0
+    return r0, r1, elapsed, seen, rows
+
+
+def cmd_name(args):
+    exe = args.split(None, 1)[0] if args else "?"
+    return os.path.basename(exe)
+
+
+def main(argv):
+    children, pid, secs = parse_args(argv)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        sys.exit(f"qs-perf: no such pid {pid}")
+
+    r0, r1, elapsed, seen, rows = watch(pid, secs)
+
+    def d(field):
+        return getattr(r1, field) - getattr(r0, field)
+
+    self_cpu = (d("ri_user_time") + d("ri_system_time")) * ABS_TO_S
+    child_cpu = (d("ri_child_user_time") + d("ri_child_system_time")) * ABS_TO_S
+    direct = [p for p, (depth, _) in seen.items() if depth == 1]
+
+    if children:
+        hist = Counter(cmd_name(a) for _, a in seen.values())
+        lines = Counter(a[:110] for _, a in seen.values())
+        print(f"children of {pid} over {elapsed:.0f}s: {len(seen)} seen "
+              f"({len(direct)} direct), {child_cpu / elapsed * 100:.1f}% reaped-child CPU")
+        print("\n  by command:")
+        for name, n in hist.most_common():
+            print(f"  {n:5d}  {name}")
+        print("\n  by command line:")
+        for line, n in lines.most_common(40):
+            print(f"  {n:5d}  {line}")
+        return 0
+
+    stats = {
+        "ts": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "pid": pid,
+        "seconds": round(elapsed, 1),
+        "self_cpu_pct": round(self_cpu / elapsed * 100, 2),
+        "children_cpu_pct": round(child_cpu / elapsed * 100, 2),
+        "spawns_per_s": round(len(direct) / elapsed, 2),
+        "descendants_per_s": round(len(seen) / elapsed, 2),
+        "wakeups_per_s": round(d("ri_interrupt_wkups") / elapsed, 1),
+        "idle_wakeups_per_s": round(d("ri_pkg_idle_wkups") / elapsed, 1),
+        "rss_mb": round(r1.ri_resident_size / 2**20, 1),
+        "threads": thread_count(pid),
+        "fds": fd_count(pid),
+        "orphan_adapters": len(orphan_adapters(rows)),
+        "dead_instance_dirs": dead_instance_dirs(),
+    }
+    stats.update(footprint(pid))
+    stats["top_children"] = Counter(cmd_name(a) for _, a in seen.values()).most_common(8)
+
+    print(f"qs-perf pid {pid} over {elapsed:.0f}s")
+    row = lambda k, v, note="": print(f"  {k:<26}{v:>10}  {note}")
+    row("self CPU %", f"{stats['self_cpu_pct']:.2f}", "proc_pid_rusage user+system")
+    row("reaped-children CPU %", f"{stats['children_cpu_pct']:.2f}", "ri_child_* deltas")
+    row("spawns/s", f"{stats['spawns_per_s']:.2f}", f"{len(direct)} direct children seen at 250 ms")
+    row("descendants/s", f"{stats['descendants_per_s']:.2f}", f"{len(seen)} incl. grandchildren")
+    row("interrupt wakeups/s", f"{stats['wakeups_per_s']:.1f}", f"idle wakeups/s {stats['idle_wakeups_per_s']}")
+    row("RSS MB", f"{stats['rss_mb']:.1f}")
+    if "footprint_mb" in stats:
+        row("footprint MB", f"{stats['footprint_mb']:.1f}",
+            f"IOSurface {stats.get('iosurface_mb', '?')}  IOAccelerator {stats.get('ioaccel_mb', '?')}")
+    row("threads / fds", f"{stats['threads']}/{stats['fds']}")
+    row("orphan adapters", stats["orphan_adapters"], "mediaremote-adapter.pl not under a quickshell")
+    row("dead instance dirs", stats["dead_instance_dirs"], f"{RUNTIME}/quickshell/by-pid")
+    if stats["top_children"]:
+        row("top children", ", ".join(f"{n} {c}" for c, n in stats["top_children"]))
+
+    os.makedirs(os.path.dirname(HISTORY), exist_ok=True)
+    with open(HISTORY, "a") as f:
+        f.write(json.dumps(stats) + "\n")
+    print(f"  appended to {os.path.relpath(HISTORY, ROOT)}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

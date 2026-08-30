@@ -1,0 +1,128 @@
+#!/bin/bash
+# Remove stale TCC (privacy permission) rows.
+#
+#   qs-tcc-clean            list what would be removed, change nothing
+#   sudo qs-tcc-clean -w    remove them
+#
+# macOS records a privacy grant against the program that asked for it. For an
+# app that is a bundle id; for a command-line binary it is an absolute path plus
+# a code requirement. Neither is stable here:
+#
+#   - Uninstall a tool and its rows stay for ever. Homebrew paths carry the
+#     version, so every upgrade leaves another one behind.
+#   - Rebuild an ad-hoc-signed binary and the path still matches but the code
+#     requirement does not, so the row is present and the grant does not work.
+#     That is what "could not access accessibility features" means when the
+#     checkbox already looks ticked.
+#
+# System Settings shows those rows with a generic icon and no way to tell which
+# are dead. This removes the ones whose binary is gone, and -b removes rows for
+# a binary that still exists so the next launch asks again.
+#
+# The system database needs root and is the one holding Accessibility, Screen
+# Recording, Input Monitoring and Full Disk Access. `tccutil reset` is the
+# supported route but it only takes bundle identifiers, so it cannot touch any
+# of these. Both databases are backed up first.
+#
+# ponytail: deletes rows, never adds. Granting still goes through System
+# Settings, by design -- a tool that could grant itself permissions would be a
+# nice thing for malware to find.
+
+set -uo pipefail
+
+SYS="/Library/Application Support/com.apple.TCC/TCC.db"
+# Under sudo, HOME is root's, and the user database that matters is the one
+# belonging to whoever invoked it.
+REAL_HOME="$HOME"
+if [ -n "${SUDO_USER:-}" ]; then
+    REAL_HOME="$(dscl . -read "/Users/$SUDO_USER" NFSHomeDirectory 2>/dev/null | awk '{print $2}')"
+    [ -n "$REAL_HOME" ] || REAL_HOME="/Users/$SUDO_USER"
+fi
+USR="$REAL_HOME/Library/Application Support/com.apple.TCC/TCC.db"
+WRITE=0
+declare -a EXTRA=()
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -w|--write) WRITE=1; shift ;;
+        -b|--also) EXTRA+=("$2"); shift 2 ;;
+        -h|--help) sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        *) echo "unknown option: $1" >&2; exit 2 ;;
+    esac
+done
+
+command -v sqlite3 >/dev/null || { echo "sqlite3 not found" >&2; exit 1; }
+
+# A row is stale when its client is an absolute path with nothing at the end of
+# it. Bundle ids are left alone: an app can be reinstalled at a new location and
+# keep its identifier, so a missing bundle proves nothing.
+stale_rows() {
+    local db="$1" label="$2"
+    sqlite3 "$db" "select service || '|' || client from access where client like '/%'" 2>/dev/null |
+    while IFS='|' read -r service client; do
+        [ -e "$client" ] || printf '%s\t%s\t%s\n' "$label" "${service#kTCCService}" "$client"
+    done
+}
+
+extra_rows() {
+    local db="$1" label="$2" pat
+    for pat in "${EXTRA[@]+"${EXTRA[@]}"}"; do
+        sqlite3 "$db" "select service || '|' || client from access where client like '%${pat}%'" 2>/dev/null |
+        while IFS='|' read -r service client; do
+            printf '%s\t%s\t%s\n' "$label" "${service#kTCCService}" "$client"
+        done
+    done
+}
+
+readable() { sqlite3 "$1" "select 1 from access limit 1" >/dev/null 2>&1; }
+
+readable "$SYS" || echo "note: cannot read the system database -- grant Full Disk Access to this terminal" >&2
+
+ROWS="$( { stale_rows "$SYS" system; stale_rows "$USR" user; extra_rows "$SYS" system; extra_rows "$USR" user; } | sort -u )"
+
+if [ -z "$ROWS" ]; then echo "nothing stale"; exit 0; fi
+
+printf '%-7s %-24s %s\n' DB SERVICE CLIENT
+printf '%s\n' "$ROWS" | while IFS=$'\t' read -r db svc cl; do printf '%-7s %-24s %s\n' "$db" "$svc" "$cl"; done
+echo
+echo "$(printf '%s\n' "$ROWS" | wc -l | tr -d ' ') rows"
+
+[ "$WRITE" -eq 1 ] || { echo "dry run; add -w to remove them (sudo as well, for the system rows)"; exit 0; }
+
+# The user database belongs to the user, so half this job never needed root.
+# Only the system one -- Accessibility, Screen Recording, Input Monitoring,
+# Full Disk Access -- does, and refusing to do anything without it just leaves
+# the caller to run the whole thing as root for no reason.
+ROOT=0; [ "$(id -u)" -eq 0 ] && ROOT=1
+if [ "$ROOT" -eq 0 ] && printf '%s\n' "$ROWS" | grep -q '^system'; then
+    echo "not root: cleaning the user database only, leaving $(printf '%s\n' "$ROWS" | grep -c '^system') system rows"
+    echo "  for those: sudo $0 -w${EXTRA[0]+ -b ${EXTRA[0]}}"
+fi
+
+STAMP="$(date +%Y%m%d-%H%M%S)"
+BACKUP_DIR="$REAL_HOME/Library/Application Support/quickshell/tcc-backups"
+mkdir -p "$BACKUP_DIR"
+for db in "$SYS" "$USR"; do
+    [ -f "$db" ] || continue
+    [ "$db" = "$SYS" ] && [ "$ROOT" -eq 0 ] && continue
+    tag=system; [ "$db" = "$USR" ] && tag=user
+    cp "$db" "$BACKUP_DIR/${tag}-TCC-${STAMP}.db" 2>/dev/null \
+        && echo "backed up $tag -> $BACKUP_DIR/${tag}-TCC-${STAMP}.db"
+done
+
+printf '%s\n' "$ROWS" | while IFS=$'\t' read -r db svc cl; do
+    if [ "$db" = system ] && [ "$ROOT" -eq 0 ]; then
+        echo "skipped  $svc  $cl  (needs root)"
+        continue
+    fi
+    target="$SYS"; [ "$db" = user ] && target="$USR"
+    if sqlite3 "$target" "delete from access where service='kTCCService${svc}' and client='${cl//\'/\'\'}'" 2>/dev/null; then
+        echo "removed  $svc  $cl"
+    else
+        echo "FAILED   $svc  $cl"
+    fi
+done
+
+# tccd caches; without this the old rows keep answering until it restarts.
+killall tccd 2>/dev/null && echo "restarted tccd"
+echo "done -- re-grant anything you still want in System Settings > Privacy & Security"

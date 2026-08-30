@@ -8,33 +8,39 @@ import Quickshell.Io
 //
 // WHAT IS REAL
 //   - trackTitle / trackArtist / trackAlbum / metadata / uniqueId
+//   - trackArtUrl: a file:// path to the cover, decoded by the Mpris singleton
+//     on each track change (the stream itself runs --no-artwork). Empty until
+//     the fetch lands and for tracks without artwork.
+//   - identity: the app's display name from LaunchServices, one `lsappinfo`
+//     per bundle id; a bundle-id heuristic when the app is not running
 //   - isPlaying / playbackState (Playing or Paused; see MprisPlaybackState)
-//   - position (interpolated between MediaRemote updates so it advances
-//     smoothly) and length, both in seconds with sub-second precision
-//   - identity, derived from the owning app's bundle identifier
+//   - position (interpolated between MediaRemote updates, at `rate`, so it
+//     advances smoothly) and length, both in seconds with sub-second precision
 //   - play() / pause() / togglePlaying() / stop() / next() / previous()
 //   - seeking: writing `position` and calling seek() run `media-control seek`
 //   - raise() opens the owning app; quit() quits it (both via its bundle id)
+//   - loopState / shuffle: written through `media-control repeat|shuffle` and
+//     read back from the stream's repeatMode/shuffleMode. loopSupported and
+//     shuffleSupported are true only while the frame carries the key, which
+//     is per app: Music and Podcasts publish them, Spotify and browsers do
+//     not, and for those the controls stay hidden rather than lying.
+//   - rate: read from playbackRate, written through `media-control speed`.
+//     minRate/maxRate open to 0.5-2.0 while the frame carries playbackRate
+//     and stay pinned at 1.0 otherwise, which upstream treats as "no rate
+//     control".
 //
 // WHAT IS INERT OR DEGRADED
-//   - trackArtUrl is always "". media-control can emit artwork, but only as
-//     base64 bytes on a stream we deliberately run with --no-artwork, and a
-//     pure-QML shim has nowhere to put a decoded image that Image can load.
-//     Consumers already guard this with `|| fallback`.
 //   - trackAlbumArtist is always "" - MediaRemote has no such field.
 //   - volume is fixed at 1.0 and volumeSupported is false. MediaRemote exposes
 //     no per-player volume; system volume lives in the Pipewire shim instead.
-//   - loopState / shuffle are write-through only (`media-control repeat` and
-//     `shuffle` exist, reading them back does not), so loopSupported and
-//     shuffleSupported are false and consumers will hide those controls.
-//   - rate / minRate / maxRate are pinned to 1.0. `media-control speed` exists
-//     but nothing reads the current speed back, and upstream treats
-//     min == max == 1 as "no rate control", which is the honest signal.
 //   - fullscreen / canSetFullscreen are false; desktopEntry carries the macOS
 //     bundle identifier, which is the closest analogue to a .desktop name but
 //     will not resolve against a freedesktop icon theme.
 //   - dbusName is synthesised as org.mpris.MediaPlayer2.<slug>. There is no
 //     D-Bus here; it exists because configs filter duplicate players on it.
+//   - canGoNext / canGoPrevious / canPlay / canPause are always true: MediaRemote
+//     publishes no per-command availability to a third party, and a button
+//     that does nothing beats one that never appears.
 QtObject {
     id: root
 
@@ -77,15 +83,17 @@ QtObject {
     property real volume: 1.0
     readonly property bool volumeSupported: false
 
+    // Upstream these *Supported flags are read-only; here the singleton writes
+    // them per frame, and consumers only ever read them.
     property int loopState: MprisLoopState.None
-    readonly property bool loopSupported: false
+    property bool loopSupported: false
 
     property bool shuffle: false
-    readonly property bool shuffleSupported: false
+    property bool shuffleSupported: false
 
     property real rate: 1.0
-    readonly property real minRate: 1.0
-    readonly property real maxRate: 1.0
+    property real minRate: 1.0
+    property real maxRate: 1.0
 
     property bool fullscreen: false
     readonly property bool canSetFullscreen: false
@@ -177,7 +185,7 @@ QtObject {
     function __tick(): void {
         if (!root.isPlaying || root.length <= 0)
             return;
-        const next = root.__baseElapsed + (Date.now() - root.__baseTime) / 1000;
+        const next = root.__baseElapsed + (Date.now() - root.__baseTime) / 1000 * root.rate;
         root.__setPosition(Math.min(next, root.length));
     }
 
@@ -246,14 +254,55 @@ QtObject {
         root.__internalState = false;
     }
 
+    // Set while the singleton mirrors a frame into loopState/shuffle/rate, so
+    // reflecting reality is not mistaken for a request to change it.
+    property bool __internalMode: false
+
     onLoopStateChanged: {
+        if (root.__internalMode)
+            return;
         const modes = ["off", "track", "playlist"];
-        const mode = modes[root.loopState] ?? "off";
-        root.__ctl.exec(["media-control", "repeat", mode]);
+        root.__ctl.exec(["media-control", "repeat", modes[root.loopState] ?? "off"]);
     }
 
     onShuffleChanged: {
+        if (root.__internalMode)
+            return;
         root.__ctl.exec(["media-control", "shuffle", root.shuffle ? "tracks" : "off"]);
+    }
+
+    onRateChanged: {
+        if (root.__internalMode)
+            return;
+        // Restamp so the interpolation continues from here at the new speed.
+        root.__rebase(root.position);
+        root.__ctl.exec(["media-control", "speed", `${root.rate}`]);
+    }
+
+    function __setLoop(state: int, supported: bool): void {
+        root.__internalMode = true;
+        root.loopSupported = supported;
+        root.loopState = state;
+        root.__internalMode = false;
+    }
+
+    function __setShuffle(on: bool, supported: bool): void {
+        root.__internalMode = true;
+        root.shuffleSupported = supported;
+        root.shuffle = on;
+        root.__internalMode = false;
+    }
+
+    // ponytail: MediaRemote reports the rate but not its bounds; 0.5-2.0 is
+    // what Music and Podcasts accept from `media-control speed`. Ceiling: an
+    // app with a narrower range ignores the out-of-range write and the next
+    // frame snaps `rate` back. Upgrade path: none short of per-app tables.
+    function __setRate(rate: real, supported: bool): void {
+        root.__internalMode = true;
+        root.minRate = supported ? 0.5 : 1;
+        root.maxRate = supported ? 2 : 1;
+        root.rate = supported ? rate : 1;
+        root.__internalMode = false;
     }
 
     function __setPosition(seconds: real): void {

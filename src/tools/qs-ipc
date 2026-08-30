@@ -1,0 +1,29 @@
+#!/bin/bash
+# Call an IPC target on the running shell.
+#
+#   qs-ipc bar toggle
+#   qs-ipc sidebarLeft toggle
+#   qs-ipc region screenshot
+#
+# On Linux these actions are bound through Hyprland's GlobalShortcut protocol.
+# macOS has no equivalent, so skhd and karabiner call this instead — the shell
+# exposes the same actions over its IPC socket either way. Both call it by
+# absolute path, because Karabiner does not expand `~`; keep the name.
+#
+# The env and the config this targets are the binary's business, not ours: it
+# defaults QS_CONFIG_NAME, so this lands on the same instance a bare `qs` would
+# start. Set QS_CONFIG_NAME to talk to a different one.
+#
+# ponytail: bin/qs-ipc -> qs -> this -> quickshell is two bash execs and one
+# extra Mach-O start (~30 ms) per keypress. Point skhd and karabiner at
+# Quickshell.app/Contents/Resources/tools/qs-ipc to skip the first two, or
+# teach the dispatcher the alias, if that ever shows.
+
+set -uo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# The checkout: two levels up from src/tools, four from inside the bundle.
+ROOT="${HERE%/Quickshell.app/Contents/Resources/tools}"; ROOT="${ROOT%/src/tools}"
+QS="$ROOT/Quickshell.app/Contents/MacOS/quickshell"
+
+exec "$QS" ipc call "$@"

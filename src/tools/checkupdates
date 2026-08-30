@@ -1,0 +1,18 @@
+#!/bin/bash
+# checkupdates(8) stand-in for the macOS port: Homebrew outdated packages in
+# the "name old -> new" shape Updates.qml counts lines of. Exits 2 with no
+# output when nothing is outdated, as checkupdates does.
+#
+#   checkupdates [--help]
+#
+# ponytail: brew only. `softwareupdate -l` would add OS updates but takes
+# 10-30 s and hits the network on every poll; add it behind a flag if wanted.
+case "${1:-}" in
+    -h|--help) sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+esac
+command -v brew >/dev/null 2>&1 || { echo "checkupdates: brew not found" >&2; exit 1; }
+# Formulae print "name (old) < new", casks "name (old) != new", and a formula
+# with several versions installed lists them "(a, b)"; all become one word.
+out="$(brew outdated --verbose 2>/dev/null | sed -E 's/, /,/g; s/^([^ ]+) \(([^)]*)\) (<|!=) (.*)$/\1 \2 -> \4/')"
+[ -n "$out" ] || exit 2
+printf '%s\n' "$out"

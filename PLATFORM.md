@@ -7,7 +7,8 @@ must be C++ and what can be QML, and what is already done.
 ## Build it
 
 ```sh
-bin/qs-build            # clone upstream, apply the patch, build, install, sign
+bin/qs qs-build         # fresh checkout: build, install into Quickshell.app, sign
+bin/qs-build            # afterwards, the same through its symlink
 bin/qs-build --clean    # from scratch
 ```
 
@@ -22,9 +23,28 @@ Bluetooth, NetworkManager, jemalloc, the crash handler) now defaults **off on
 Apple** and `COCOA` defaults on, so a first configure on a Mac just works.
 
 > **Copying the binary breaks it.** A `cp` of a Mach-O file invalidates its
-> ad-hoc signature and the kernel then kills it on exec with *no output at all* —
+> signature and the kernel then kills it on exec with *no output at all* —
 > it looks like the binary silently does nothing. Always
-> `codesign -f -s - <binary>` after copying. `qs-build` does this for you.
+> `codesign -f -s - <binary>` after copying. `bin/qs-bundle` does this for you.
+
+The built binary is installed as `Quickshell.app/Contents/MacOS/quickshell`
+(`Info.plist` comes from `assets/Quickshell.plist`), and `bin/qs` — the one
+command — execs that real path under whatever name it was called by. It is a
+script, not a symlink, because `NSBundle.mainBundle` resolves the bundle from
+the executable's real path and a symlink outside the bundle leaves the process
+with no bundle at all. See "TCC identity" below for why, and `tests/bundle.sh`
+for the check.
+
+The same Mach-O is every tool. `src/launch/tools.cpp` runs before Qt: it sets
+`PATH` (the bundle's `Contents/Resources/tools` first, then `bin/`),
+`XDG_RUNTIME_DIR` and `QML2_IMPORT_PATH`, then execs
+`Contents/Resources/tools/<name>` when `argv[0]` or `argv[1]` names one, and
+lists them for `qs --tools`. `qs-bundle` fills that directory from
+`src/tools/` — scripts copied, `*.c` compiled (a first line `// cc: <flags>`
+supplies link flags) — and writes `bin/<tool> -> qs` for each, so PATH needs
+one entry and skhd, karabiner and launchd keep their absolute paths. The
+layout is directory-driven: a new tool is a new file in `src/tools/`.
+`tests/one-binary.sh` checks all of it.
 
 ## The seam
 
@@ -111,7 +131,17 @@ Take `src/cocoa/wayland/` as the worked example.
 
 `Quickshell` core · `Quickshell.Io` · `Quickshell.Widgets` · `PanelWindow`,
 `FloatingWindow`, `PopupWindow` · `Quickshell.Wayland` (`WlrLayershell` attached
-type driving NSWindow level; `ToplevelManager`/`Toplevel` over yabai)
+type driving NSWindow level; `ToplevelManager`/`Toplevel` over yabai) ·
+`Quickshell.Cocoa.Hotkeys` behind the `GlobalShortcut` shim (Carbon
+`RegisterEventHotKey`; chord table `src/cocoa/shortcuts.json` overlaid by
+`~/.config/quickshell-macos/shortcuts.json`, any chord skhdrc binds is left to
+skhd; a bare-modifier hold like end-4's SUPER for `workspaceNumber` is not a
+hot key and stays IPC-only until a CGEvent tap under Input Monitoring exists) ·
+pasteboard watch (`src/cocoa/clipboard.mm`: `Quickshell.clipboardTextChanged`
+fires for copies made in other apps, which Qt alone only notices on app
+activation, and every copy lands in the history `bin/cliphist` serves from
+`~/Library/Application Support/quickshell/cliphist`; `bin/wl-copy`/`bin/wl-paste`
+wrap `pbcopy`/`pbpaste`)
 
 **Shims (loose QML — should migrate into the binary)**
 
@@ -133,8 +163,7 @@ greetd · polkit
 
 ## Roadmap, by value over effort
 
-**Small.** `GlobalShortcut` via Carbon `RegisterEventHotKey` (removes the skhd
-dependency entirely) · `IdleMonitor` via `CGEventSourceSecondsSinceLastEventType`
+**Small.** `IdleMonitor` via `CGEventSourceSecondsSinceLastEventType`
 and `IdleInhibitor` via `IOPMAssertionCreateWithName` (both currently fork a
 subprocess every second) · `UPower` via `IOPSCopyPowerSourcesInfo` +
 `IOPSNotificationCreateRunLoopSource` · `Pipewire` default device via CoreAudio
@@ -167,13 +196,126 @@ cross-platform Quickshell.
 ## Gotchas
 
 - **Re-sign after copying the binary** (see above). This one wastes hours.
-- The launchers put `bin/` first on `PATH`. It holds `notify-send`, `xdg-open`,
-  `pidof` and `qs` stand-ins that configs shell out to by bare name. Nothing is
-  installed system-wide.
-- All launchers share `XDG_RUNTIME_DIR=/tmp/quickshell-$UID`. If you start a
-  shell with a different one, `qs ipc` cannot reach it.
+- The binary puts `Quickshell.app/Contents/Resources/tools` first on `PATH`,
+  then `bin/`. That is where `notify-send`, `xdg-open`, `pidof`, `hyprctl` and
+  the rest come from when a config shells out to them by bare name, and where
+  `qs` itself comes from. Nothing is installed system-wide.
+- The binary defaults `XDG_RUNTIME_DIR=/tmp/quickshell-$UID` for itself and
+  every tool. If you start a shell with a different one, `qs ipc` cannot reach
+  it.
+- Tools run from inside the bundle: an edit under `src/tools/` is live after
+  `qs-dev --no-build` or `qs-bundle`, not before.
 - `~/.config/quickshell/` carries `// macos: ` markers where a line was disabled.
   Grep for that exact marker — two `WlrLayershell` lines were already commented
   out upstream and must stay that way.
 - `Quickshell.WindowManager` compiles on macOS but only speaks ext-workspace-v1,
   so it is present and permanently empty rather than absent.
+- Hot keys and skhd must not share a chord: skhd's event tap swallows the key
+  before the hot key sees it, and a stale `qs-ipc ... toggle` line would fire an
+  action a second time. `Hotkeys` therefore skips any chord skhdrc binds (logged
+  at startup), and `qs-install-keybinds` leaves skhd only the settings window.
+  Both files are read once per shell start. Synthetic key events reach hot keys
+  for letter keys, not for F17-F19 (`tests/hotkeys.sh` relies on that).
+
+## TCC identity
+
+macOS records every privacy grant (Screen Recording, Accessibility, Full Disk
+Access, Location, Automation) against the requesting program's *designated
+requirement*. For a bare ad-hoc-signed binary that requirement is the cdhash,
+so every rebuild produced a new program and every grant died with it — the
+shell's `screencapture` path, SSID, weather GPS and the notification bridge
+all broke after the next `qs-build`. Inside a bundle signed with a certificate
+the requirement is "bundle id `org.quickshell.shell`, signed by this
+certificate", which a rebuild does not change.
+
+`qs-bundle` (called by `qs-build` and `qs-dev`) builds the bundle, installs
+the tools into it, signs it with `$QS_CODESIGN_IDENTITY` or ad-hoc when that
+is unset, and regenerates `bin/`'s symlinks. Ad-hoc signing works today but
+keeps the per-build identity. Two one-time steps make it stable — these need the user's
+keychain and the System Settings UI, so nothing here does them for you.
+
+### 1. Create the "Quickshell Dev" code-signing certificate (once)
+
+Keychain Access → menu **Keychain Access → Certificate Assistant → Create a
+Certificate…**
+
+- Name: `Quickshell Dev`
+- Identity Type: `Self Signed Root`
+- Certificate Type: **`Code Signing`**
+- Leave "Let me override defaults" unchecked → **Create**.
+
+It lands in the *login* keychain. Check with:
+
+```sh
+security find-identity -v -p codesigning     # lists "Quickshell Dev"
+```
+
+Then build with it, and export the variable in the shell you build from
+(`~/.zshenv`, or the environment of whatever runs `qs-build`):
+
+```sh
+export QS_CODESIGN_IDENTITY="Quickshell Dev"
+bin/qs-build
+codesign -dvv Quickshell.app 2>&1 | grep Authority     # Authority=Quickshell Dev
+```
+
+The first `codesign` with a new certificate pops a keychain dialog asking to
+let `codesign` use the key: choose **Always Allow**, or every rebuild asks
+again.
+
+Command-line alternative: an OpenSSL self-signed certificate with the
+code-signing EKU, imported into the login keychain. The PKCS#12 must use the
+legacy PBE algorithms or `security import` rejects it ("MAC verification
+failed"), and the final `add-trusted-cert` opens an authorization dialog —
+until the certificate is trusted, `find-identity -v` lists nothing and
+`codesign` reports "no identity found".
+
+```sh
+cd "$(mktemp -d)"
+cat > ext.cnf <<'CNF'
+[req]
+distinguished_name = dn
+x509_extensions = ext
+prompt = no
+[dn]
+CN = Quickshell Dev
+[ext]
+keyUsage = critical, digitalSignature
+extendedKeyUsage = critical, codeSigning
+basicConstraints = critical, CA:false
+CNF
+openssl req -x509 -newkey rsa:2048 -nodes -days 3650 -config ext.cnf \
+    -keyout key.pem -out cert.pem
+openssl pkcs12 -export -inkey key.pem -in cert.pem -name "Quickshell Dev" \
+    -keypbe PBE-SHA1-3DES -certpbe PBE-SHA1-3DES -macalg sha1 \
+    -passout pass:qs -out qs.p12
+security import qs.p12 -k ~/Library/Keychains/login.keychain-db -P qs \
+    -T /usr/bin/codesign
+security add-trusted-cert -p codeSign -k ~/Library/Keychains/login.keychain-db cert.pem
+security find-identity -v -p codesigning        # now lists "Quickshell Dev"
+```
+
+### 2. Grant the permissions to Quickshell.app (once)
+
+System Settings → **Privacy & Security**. In each list press **+** (or drag
+`Quickshell.app` from the repo root into the list) and enable the toggle:
+
+- **Screen Recording** — window thumbnails (`qs-window-thumbs`), the
+  screenshot / region tools, `ScreencopyView`.
+- **Accessibility** — event taps, focus grabs, window management helpers.
+- **Full Disk Access** — the notification bridge reads Notification Center's
+  database.
+- **Location Services** — the weather widget; this one prompts on first use
+  rather than needing to be added by hand, once the app is signed.
+- **Automation** — prompts per target application (System Events, Music, …)
+  the first time an `osascript` runs; there is nothing to add in advance.
+
+Screen Recording and Accessibility changes need the shell restarted
+(`qs-start`) before they take effect. After a rebuild with the
+certificate in place nothing needs re-granting; after a rebuild *without* it
+(ad-hoc), every one of these has to be redone, which is why step 1 exists.
+
+Which program macOS holds responsible for a subprocess's request is inherited
+from the process that launched it, so launch the shell through `qs-start` (which
+execs the bundle binary through `qs`) rather than from a terminal, whose own
+grants would otherwise be the ones consulted.

@@ -1,0 +1,89 @@
+#!/usr/bin/env python3
+"""Count every process a quickshell instance spawns, including the short ones.
+
+    qs-spawns <pid> [seconds]        execs under <pid> over the window, by name
+    qs-spawns <pid> [seconds] -v     also print each one as it appears
+
+qs-perf samples `ps` at 250 ms and misses anything shorter (yabai, jq, grep),
+so its spawns/s is a floor. This polls libproc's proc_listchildpids() every
+millisecond instead — a few microseconds per call, no ps — and follows one
+level of grandchildren (sh -c '...' | jq). A process that lives under a
+millisecond can still slip through, and nothing does. Stdlib + ctypes only.
+"""
+
+import ctypes
+import sys
+import time
+
+libproc = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
+libproc.proc_listchildpids.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_int]
+libproc.proc_listchildpids.restype = ctypes.c_int
+libproc.proc_name.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32]
+libproc.proc_name.restype = ctypes.c_int
+
+_buf = (ctypes.c_int * 512)()
+_name = ctypes.create_string_buffer(64)
+
+
+def children(pid):
+    n = libproc.proc_listchildpids(pid, _buf, ctypes.sizeof(_buf))
+    return [_buf[i] for i in range(max(0, n))]
+
+
+def name(pid):
+    n = libproc.proc_name(pid, _name, ctypes.sizeof(_name))
+    return _name.value.decode(errors="replace") if n > 0 else "?"
+
+
+def main(argv):
+    if not argv or argv[0] in ("-h", "--help"):
+        print(__doc__.strip())
+        return 0
+    pid = int(argv[0])
+    secs = float(argv[1]) if len(argv) > 1 and not argv[1].startswith("-") else 10.0
+    verbose = "-v" in argv
+
+    parent = name(pid)
+    seen = {}      # pid -> name, everything observed so far
+    pending = {}   # pid -> (parent name, samples left): seen between fork and exec
+    counts = {}
+    deadline = time.monotonic() + secs
+    while time.monotonic() < deadline:
+        for c in children(pid):
+            new = [c] if c not in seen else []
+            for g in children(c):
+                if g not in seen:
+                    new.append(g)
+            for p in new:
+                nm = name(p)
+                seen[p] = nm
+                # A child seen between fork and exec still carries its
+                # parent's name; keep re-reading it for a few samples.
+                if nm in (parent, "sh", "bash"):
+                    pending[p] = (nm, 50)
+                else:
+                    counts[nm] = counts.get(nm, 0) + 1
+                    if verbose:
+                        print(f"  {time.strftime('%H:%M:%S')} {p:6d} {nm}")
+        for p, (was, left) in list(pending.items()):
+            nm = name(p)
+            if nm == "?" or nm != was or left <= 0:
+                nm = nm if nm not in ("?", was) else (was + " (exec not seen)" if was == parent else was)
+                seen[p] = nm
+                counts[nm] = counts.get(nm, 0) + 1
+                if verbose:
+                    print(f"  {time.strftime('%H:%M:%S')} {p:6d} {nm}")
+                del pending[p]
+            else:
+                pending[p] = (was, left - 1)
+        time.sleep(0.001)
+
+    total = sum(counts.values())
+    print(f"{total} spawns under {pid} in {secs:.0f}s ({total / secs:.2f}/s)")
+    for nm, n in sorted(counts.items(), key=lambda kv: -kv[1]):
+        print(f"  {n:5d}  {nm}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

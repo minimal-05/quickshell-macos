@@ -1,0 +1,74 @@
+#!/usr/bin/env python3
+"""wl-copy(1) stand-in for the macOS port, over pbcopy.
+
+  wl-copy [-n] [-t MIME] [-c] [text...]
+    text from the arguments, joined by spaces with a newline appended (-n omits
+    it); from stdin as is when there are no arguments
+    -t image/png|image/jpeg|image/tiff   put image data on the pasteboard
+    -c, --clear                          empty the pasteboard
+  -p (the primary selection), -o, -f and -s are accepted and ignored: macOS
+  has one pasteboard and no selection, and nothing here has to stay alive to
+  serve it.
+"""
+import os
+import subprocess
+import sys
+import tempfile
+
+IMAGE_CLASS = {"image/png": "PNGf", "image/jpeg": "JPEG", "image/tiff": "TIFF"}
+
+
+def main(argv):
+    mime, newline, clear, words = "", True, False, []
+    args = argv[1:]
+    while args:
+        a = args.pop(0)
+        if a in ("-n", "--trim-newline"):
+            newline = False
+        elif a in ("-t", "--type"):
+            mime = args.pop(0) if args else ""
+        elif a.startswith("--type="):
+            mime = a.partition("=")[2]
+        elif a in ("-c", "--clear"):
+            clear = True
+        elif a in ("-s", "--seat"):
+            args.pop(0) if args else None
+        elif a in ("-p", "--primary", "-o", "--paste-once", "-f", "--foreground"):
+            pass
+        elif a in ("-h", "--help"):
+            print(__doc__.strip())
+            return 0
+        elif a == "--":
+            words += args
+            break
+        else:
+            words.append(a)
+
+    if clear:
+        return subprocess.run(["pbcopy"], input=b"").returncode
+
+    data = (" ".join(words) + ("\n" if newline else "")).encode() if words else sys.stdin.buffer.read()
+
+    if mime.startswith("image/"):
+        cls = IMAGE_CLASS.get(mime)
+        if not cls:
+            sys.stderr.write(f"wl-copy: unsupported image type {mime}\n")
+            return 1
+        with tempfile.NamedTemporaryFile(prefix="wl-copy.", delete=False) as f:
+            f.write(data)
+        try:
+            # The one scriptable way to put typed binary data on the pasteboard
+            # without PyObjC: AppleScript reads the file as that class.
+            r = subprocess.run(["osascript", "-e", f'set the clipboard to (read (POSIX file "{f.name}") as «class {cls}»)'],
+                               capture_output=True, text=True)
+            if r.returncode:
+                sys.stderr.write(r.stderr)
+            return r.returncode
+        finally:
+            os.unlink(f.name)
+
+    return subprocess.run(["pbcopy"], input=data).returncode
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

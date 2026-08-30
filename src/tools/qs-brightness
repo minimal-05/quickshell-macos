@@ -1,0 +1,45 @@
+#!/bin/bash
+# Brightness control that works whether or not the shell is running.
+#
+# Same shape as qs-volume, for the same reason: Karabiner grabs F1/F2, so macOS
+# never sees them, and if they were forwarded only to the shell then any moment
+# it is down -- crashed, restarting, reloading after a config edit -- the keys
+# would do nothing at all. Try the shell first so the OSD and the ramp still
+# work, and fall back to the DisplayServices helper when it does not answer.
+#
+# The step below must match increaseBrightness/decreaseBrightness in
+# ~/.config/quickshell/<config>/services/Brightness.qml.
+
+set -uo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# The config: ~/.config/quickshell/<QS_CONFIG_NAME>/ where that exists, else
+# ~/.config/quickshell itself. Same resolution as qs-settings and friends -- a
+# bare path here missed the nesting and left the brightness keys with no
+# fallback when IPC did not answer.
+CFG_DIR="$HOME/.config/quickshell"
+[ -d "$CFG_DIR/${QS_CONFIG_NAME:-end4}" ] && CFG_DIR="$CFG_DIR/${QS_CONFIG_NAME:-end4}"
+PY="$CFG_DIR/scripts/macos/brightness.py"
+STEP=0.05
+
+case "${1:-}" in
+    up)      "$HERE/qs-ipc" brightness increment >/dev/null 2>&1 && exit 0; dir=1 ;;
+    down)    "$HERE/qs-ipc" brightness decrement >/dev/null 2>&1 && exit 0; dir=-1 ;;
+    release) "$HERE/qs-ipc" brightness release   >/dev/null 2>&1; exit 0 ;;
+    *) echo "usage: ${0##*/} up|down|release" >&2; exit 2 ;;
+esac
+
+cur=$(python3 "$PY" get 2>/dev/null) || exit 1
+[ -n "$cur" ] || exit 1
+
+# 0 is a real value here: the bottom of the range turns the backlight off, the
+# way the native F1 key does.
+next=$(CUR="$cur" DIR="$dir" STEP="$STEP" python3 -c '
+import os
+cur = float(os.environ["CUR"])
+d = int(os.environ["DIR"])
+step = float(os.environ["STEP"])
+print(f"{max(0.0, min(1.0, cur + d * step)):.4f}")
+') || exit 1
+
+python3 "$PY" set "$next"

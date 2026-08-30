@@ -1,0 +1,85 @@
+#!/usr/bin/env python3
+"""wl-paste(1) stand-in for the macOS port, over pbpaste.
+
+  wl-paste [-n] [-t MIME] [-l]
+    prints the pasteboard text with a newline appended (-n omits it)
+    -t image/png|image/jpeg|image/tiff   print image data instead
+    -l, --list-types                     list the offered types as MIME
+  -p (the primary selection) exits 1: macOS has no selection. -w/--watch is
+  not implemented: the shell records clipboard history itself, so the
+  `wl-paste --watch cliphist store` pipeline has nothing to do here.
+"""
+import re
+import subprocess
+import sys
+
+IMAGE_CLASS = {"image/png": "PNGf", "image/jpeg": "JPEG", "image/tiff": "TIFF"}
+# AppleScript `clipboard info` class -> MIME, for -l.
+CLASS_MIME = {"PNGf": "image/png", "JPEG": "image/jpeg", "TIFF": "image/tiff", "furl": "text/uri-list",
+              "utf8": "text/plain;charset=utf-8", "ut16": "text/plain;charset=utf-16", "RTF ": "text/rtf",
+              "HTML": "text/html"}
+
+
+def osascript(expr):
+    return subprocess.run(["osascript", "-e", expr], capture_output=True, text=True)
+
+
+def main(argv):
+    mime, newline, list_types = "", True, False
+    args = argv[1:]
+    while args:
+        a = args.pop(0)
+        if a in ("-n", "--no-newline"):
+            newline = False
+        elif a in ("-t", "--type"):
+            mime = args.pop(0) if args else ""
+        elif a.startswith("--type="):
+            mime = a.partition("=")[2]
+        elif a in ("-l", "--list-types"):
+            list_types = True
+        elif a in ("-s", "--seat"):
+            args.pop(0) if args else None
+        elif a in ("-p", "--primary"):
+            sys.stderr.write("wl-paste: no primary selection on macOS\n")
+            return 1
+        elif a in ("-w", "--watch"):
+            sys.stderr.write("wl-paste: --watch is not implemented; the shell records clipboard history itself\n")
+            return 1
+        elif a in ("-h", "--help"):
+            print(__doc__.strip())
+            return 0
+
+    if list_types:
+        info = osascript("clipboard info").stdout
+        seen = []
+        for cls in re.findall(r"«class (....)»", info) + (["utf8"] if "string" in info else []):
+            m = CLASS_MIME.get(cls)
+            if m and m not in seen:
+                seen.append(m)
+        print("\n".join(seen))
+        return 0
+
+    if mime.startswith("image/"):
+        cls = IMAGE_CLASS.get(mime)
+        if not cls:
+            sys.stderr.write(f"wl-paste: unsupported image type {mime}\n")
+            return 1
+        # osascript prints raw data as «data PNGf89504E...»; decode the hex.
+        r = osascript(f"the clipboard as «class {cls}»")
+        m = re.search(r"«data " + cls + r"([0-9A-Fa-f]*)»", r.stdout)
+        if r.returncode or not m:
+            sys.stderr.write("Nothing is copied\n")
+            return 1
+        sys.stdout.buffer.write(bytes.fromhex(m.group(1)))
+        return 0
+
+    data = subprocess.run(["pbpaste"], capture_output=True).stdout
+    if not data:
+        sys.stderr.write("Nothing is copied\n")
+        return 1
+    sys.stdout.buffer.write(data + (b"\n" if newline and not data.endswith(b"\n") else b""))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

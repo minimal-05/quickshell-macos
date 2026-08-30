@@ -1,0 +1,160 @@
+#!/bin/bash
+# Run one IPC check against a throwaway quickshell instance.
+#
+#   qs-test <root.qml> [--binary <path>] [--timeout 20] [--keep] [--log <file>] \
+#           -- <target> <fn> [args...] [== expected]
+#   qs-test <root.qml> --expect-log 'pattern'          assert the log matches instead
+#   qs-test <root.qml> --shell                          just start it, print pid, leave it running
+#
+# Starts `<binary> -p <root.qml>`, waits for "Configuration Loaded" in its log,
+# runs `<binary> -p <root.qml> ipc call <target> <fn> [args...]`, prints
+# PASS/FAIL against `expected` (string compare; with no `==` it just prints
+# the reply), then kills only the instance it started. Exits non-zero on FAIL,
+# on a root that never loads, or on a root it refuses to run.
+#
+# Why a distinct root file: quickshell derives the instance id from the config
+# path, so a test root with its own basename is a separate instance and
+# `ipc call` addressed through the same `-p` reaches it and nothing else.
+# The user's live roots (shell.qml, settings.qml, finder.qml) are refused so a
+# test can never kill or talk to the real shell.
+#
+# Shorthand: with no `==`, a trailing bare word after <fn> that looks like a
+# value ("outside") is treated as `expected` when it is the last argument and
+# the call has exactly one extra word -- this keeps `qs-test x.qml -- probe
+# hover outside` readable. Use `==` explicitly when the fn takes arguments.
+
+set -uo pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# The checkout: two levels up from src/tools, four from inside the bundle.
+ROOT="${HERE%/Quickshell.app/Contents/Resources/tools}"; ROOT="${ROOT%/src/tools}"
+QS="$ROOT/Quickshell.app/Contents/MacOS/quickshell"
+# The binary sets these itself; they are here for a QS_BINARY that names a
+# bare build/src/quickshell outside any bundle, which cannot find the shims
+# or this tree's bin/ from its own path.
+export PATH="$ROOT/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp/quickshell-$UID}"
+export QML2_IMPORT_PATH="$ROOT/shims${QML2_IMPORT_PATH:+:$QML2_IMPORT_PATH}"
+mkdir -p "$XDG_RUNTIME_DIR"
+
+# This bundle's Mach-O by default, so a test instance is the same process
+# image as the real shell. QS_BINARY points a run at another build (a
+# worktree's Quickshell.app/Contents/MacOS/quickshell, or a bare
+# build/src/quickshell).
+BINARY="${QS_BINARY:-$QS}"
+TIMEOUT=20
+KEEP=0
+SHELL_ONLY=0
+LOG=""
+EXPECT_LOG=""
+QML=""
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --binary)  BINARY="$2"; shift 2 ;;
+        --timeout) TIMEOUT="$2"; shift 2 ;;
+        --keep)    KEEP=1; shift ;;
+        --shell)   SHELL_ONLY=1; shift ;;
+        --log)     LOG="$2"; shift 2 ;;
+        --expect-log) EXPECT_LOG="$2"; shift 2 ;;
+        --)        shift; break ;;
+        -h|--help) sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        *)  if [ -z "$QML" ]; then QML="$1"; shift
+            else echo "qs-test: unexpected argument '$1' (put ipc args after --)" >&2; exit 2; fi ;;
+    esac
+done
+
+[ -n "$QML" ] || { echo "usage: qs-test <root.qml> [--binary p] [--timeout s] -- <target> <fn> [args] [== expected]" >&2; exit 2; }
+[ -f "$QML" ] || { echo "qs-test: no such file: $QML" >&2; exit 2; }
+QML="$(cd "$(dirname "$QML")" && pwd)/$(basename "$QML")"
+BASE="$(basename "$QML")"
+case "$BASE" in
+    shell.qml|settings.qml|finder.qml)
+        echo "qs-test: refusing to run '$BASE' -- that basename is a live root; copy it under tests/ with another name" >&2
+        exit 2 ;;
+esac
+[ -x "$BINARY" ] || { echo "qs-test: binary not executable: $BINARY" >&2; exit 2; }
+
+# The instance is identified by its root path, so an instance already running
+# on this exact file (a previous crashed test) would answer our ipc call.
+if pgrep -f -- "-p $QML" >/dev/null 2>&1; then
+    echo "qs-test: an instance on $QML is already running: $(pgrep -f -- "-p $QML" | tr '\n' ' ')" >&2
+    echo "qs-test: kill it first (never kill the live shell by accident: check its args)" >&2
+    exit 2
+fi
+
+: "${LOG:=${TMPDIR:-/tmp}/qs-test-${BASE%.qml}.log}"
+: > "$LOG"
+nohup "$BINARY" -p "$QML" > "$LOG" 2>&1 &
+PID=$!
+disown
+
+cleanup() {
+    [ "$SHELL_ONLY" -eq 1 ] && return
+    [ "$KEEP" -eq 1 ] && { echo "  kept pid $PID (log $LOG)"; return; }
+    # Only the process we started -- never pkill by pattern.
+    kill "$PID" 2>/dev/null
+    for _ in 1 2 3 4 5 6 7 8 9 10; do kill -0 "$PID" 2>/dev/null || return; sleep 0.2; done
+    kill -9 "$PID" 2>/dev/null
+}
+trap cleanup EXIT
+
+ready=0
+deadline=$(( $(date +%s) + TIMEOUT ))
+while [ "$(date +%s)" -lt "$deadline" ]; do
+    if /usr/bin/python3 -c "import sys; sys.exit(0 if 'Configuration Loaded' in open(sys.argv[1], errors='replace').read() else 1)" "$LOG"; then
+        ready=1; break
+    fi
+    kill -0 "$PID" 2>/dev/null || break
+    sleep 0.25
+done
+if [ "$ready" -ne 1 ]; then
+    echo "  FAIL  $BASE did not load within ${TIMEOUT}s (log $LOG)"
+    tail -8 "$LOG" | sed 's/^/        /'
+    exit 1
+fi
+
+if [ "$SHELL_ONLY" -eq 1 ]; then
+    KEEP=1
+    echo "$PID"
+    exit 0
+fi
+
+if [ -n "$EXPECT_LOG" ]; then
+    # Give async work a moment to reach the log.
+    for _ in 1 2 3 4 5 6 7 8; do
+        /usr/bin/python3 -c "import re,sys; sys.exit(0 if re.search(sys.argv[1], open(sys.argv[2], errors='replace').read()) else 1)" "$EXPECT_LOG" "$LOG" && break
+        sleep 0.5
+    done
+    if /usr/bin/python3 -c "import re,sys; sys.exit(0 if re.search(sys.argv[1], open(sys.argv[2], errors='replace').read()) else 1)" "$EXPECT_LOG" "$LOG"; then
+        printf '  PASS  %-34s log matches /%s/\n' "$BASE" "$EXPECT_LOG"; exit 0
+    else
+        printf '  FAIL  %-34s log lacks /%s/ (log %s)\n' "$BASE" "$EXPECT_LOG" "$LOG"; exit 1
+    fi
+fi
+
+[ $# -ge 2 ] || { echo "  loaded $BASE (pid $PID); no ipc call given"; exit 0; }
+
+# Split "<target> <fn> [args...] [== expected]".
+EXPECTED=""; HAVE_EXPECTED=0
+args=("$@")
+for i in "${!args[@]}"; do
+    if [ "${args[$i]}" = "==" ]; then
+        EXPECTED="${args[*]:$((i+1))}"; HAVE_EXPECTED=1
+        args=("${args[@]:0:$i}")
+        break
+    fi
+done
+# `qs-test x.qml -- probe hover outside`: three words, no ==, last is expected.
+if [ "$HAVE_EXPECTED" -eq 0 ] && [ "${#args[@]}" -eq 3 ]; then
+    EXPECTED="${args[2]}"; HAVE_EXPECTED=1; args=("${args[@]:0:2}")
+fi
+
+ACTUAL="$("$BINARY" -p "$QML" ipc call "${args[@]}" 2>&1 | tr -d '\r' | sed -e :a -e '/^\n*$/{$d;N;ba' -e '}')"
+label="${args[0]} ${args[*]:1}"
+if [ "$HAVE_EXPECTED" -eq 0 ]; then
+    printf '  %-40s %s\n' "$label" "$ACTUAL"; exit 0
+elif [ "$ACTUAL" = "$EXPECTED" ]; then
+    printf '  PASS  %-34s %s\n' "$label" "$ACTUAL"; exit 0
+else
+    printf '  FAIL  %-34s got %-9s want %s\n' "$label" "$ACTUAL" "$EXPECTED"; exit 1
+fi
