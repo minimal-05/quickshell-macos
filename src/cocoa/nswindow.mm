@@ -636,6 +636,10 @@ void setAccessoryActivationPolicy() {
 	[NSApplication.sharedApplication setActivationPolicy:NSApplicationActivationPolicyAccessory];
 }
 
+void setRegularActivationPolicy() {
+	[NSApplication.sharedApplication setActivationPolicy:NSApplicationActivationPolicyRegular];
+}
+
 void stripQuitKeyEquivalent() {
 	// Qt builds its application menu lazily, so do this after the current turn
 	// of the run loop rather than racing it.

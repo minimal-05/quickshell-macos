@@ -166,6 +166,17 @@ bool anyMouseButtonHeld();
 /// Run without a dock icon or application menu bar.
 void setAccessoryActivationPolicy();
 
+/// Run as an ordinary application: dock icon, app switcher, menu bar.
+///
+/// The shared bundle's Info.plist sets LSUIElement so the shell (the common
+/// case) never flashes a dock icon before its first panel demotes it to
+/// accessory. An "ordinary window" process -- settings, the welcome screen --
+/// never calls that demotion, so without this it silently inherits the
+/// LSUIElement default instead of the regular app the comments here assume.
+/// Accessory apps' windows also don't get a normal accessibility role, which
+/// is what left yabai unable to read these windows' titles at all.
+void setRegularActivationPolicy();
+
 /// Unbind cmd-Q from the Quit item Qt installs by default.
 ///
 /// A shell is not an app you quit by reflex. Qt's cocoa plugin always builds an
