@@ -178,12 +178,24 @@ void dispatch(int argc, char** argv) {
 	mkdir(runtimeDir, 0700);
 
 	if (!layout.tools.empty()) {
-		// launchd and skhd hand down a minimal PATH (launchctl getenv PATH is
-		// empty), so without this the shell finds neither yabai/jq nor its own
-		// stand-ins. Tools first, bin/ next for `qs` itself; checked so the
-		// qs -> tool -> qs chain does not grow it on every hop.
+		// launchd, skhd and Karabiner hand down a minimal or empty PATH
+		// (launchctl getenv PATH is empty), so without this the shell finds
+		// neither yabai/jq nor its own stand-ins. Tools first, bin/ next for `qs`
+		// itself; checked so the qs -> tool -> qs chain does not grow it on every
+		// hop.
+		//
+		// /usr/bin and /bin are on the end because prepending to an EMPTY PATH
+		// leaves only what is listed here: a tool launched from Karabiner then has
+		// no dirname, sed, date or sqlite3, and fails in ways that look like the
+		// tool's own bug. qs-brightness lost the "$(dirname ...)" that locates
+		// qs-ipc, so the OSD never appeared and it fell back to setting brightness
+		// directly -- the key worked, the on-screen display did not.
 		if (!listHas("PATH", layout.tools)) {
-			prependToList("PATH", layout.tools + ":" + layout.root + "/bin:/opt/homebrew/bin:/usr/local/bin");
+			prependToList(
+			    "PATH",
+			    layout.tools + ":" + layout.root
+			        + "/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+			);
 		}
 
 		auto shims = layout.root + "/shims";

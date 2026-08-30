@@ -31,7 +31,14 @@
 set -uo pipefail
 
 SYS="/Library/Application Support/com.apple.TCC/TCC.db"
-USR="$HOME/Library/Application Support/com.apple.TCC/TCC.db"
+# Under sudo, HOME is root's, and the user database that matters is the one
+# belonging to whoever invoked it.
+REAL_HOME="$HOME"
+if [ -n "${SUDO_USER:-}" ]; then
+    REAL_HOME="$(dscl . -read "/Users/$SUDO_USER" NFSHomeDirectory 2>/dev/null | awk '{print $2}')"
+    [ -n "$REAL_HOME" ] || REAL_HOME="/Users/$SUDO_USER"
+fi
+USR="$REAL_HOME/Library/Application Support/com.apple.TCC/TCC.db"
 WRITE=0
 declare -a EXTRA=()
 
@@ -93,7 +100,7 @@ if [ "$ROOT" -eq 0 ] && printf '%s\n' "$ROWS" | grep -q '^system'; then
 fi
 
 STAMP="$(date +%Y%m%d-%H%M%S)"
-BACKUP_DIR="$HOME/Library/Application Support/quickshell/tcc-backups"
+BACKUP_DIR="$REAL_HOME/Library/Application Support/quickshell/tcc-backups"
 mkdir -p "$BACKUP_DIR"
 for db in "$SYS" "$USR"; do
     [ -f "$db" ] || continue
