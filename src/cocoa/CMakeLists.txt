@@ -11,6 +11,7 @@ qt_add_library(quickshell-cocoa STATIC
 	coreaudio.mm # round2/native-audio
 	hotkeys.mm # round2/native-input
 	clipboard.mm # round2/native-input
+	locationauth.mm
 )
 
 qt_add_qml_module(quickshell-cocoa
@@ -27,6 +28,9 @@ add_library(quickshell-cocoa-init OBJECT init.cpp)
 target_link_libraries(quickshell-cocoa PRIVATE Qt::Quick "-framework AppKit" "-framework QuartzCore")
 # CoreAudio for the device HAL, AudioToolbox for the virtual main volume selector. round2/native-audio
 target_link_libraries(quickshell-cocoa PRIVATE "-framework CoreAudio" "-framework AudioToolbox") # round2/native-audio
+# CoreLocation for the Location Services authorization request (locationauth.mm)
+# that backs the weather widget and real (non-redacted) Wi-Fi SSIDs.
+target_link_libraries(quickshell-cocoa PRIVATE "-framework CoreLocation")
 target_link_libraries(quickshell-cocoa-init PRIVATE Qt::Quick Qt::Qml "-framework AppKit")
 
 target_link_libraries(quickshell PRIVATE quickshell-cocoaplugin quickshell-cocoa-init)

@@ -104,6 +104,17 @@ rm -rf "$TOOLS.old"
 # exec with no output at all, so this is not optional. Signing the bundle
 # (not the bare binary) seals Info.plist and Resources into the signature,
 # which is what ties the bundle id to the code for TCC.
+#
+# No --entitlements: com.apple.developer.networking.wifi-info (the Wi-Fi SSID
+# un-redact entitlement) was tried here and reverted -- it is capability-gated
+# and needs a provisioning profile this identity does not have. Signed with
+# it, AMFI refuses to load the Mach-O at all (taskgated-helper: "Disallowing
+# org.quickshell.shell because no eligible provisioning profiles found",
+# kernel: "AMFI: bailing out because of restricted entitlements", load code
+# signature error 4), which is a hard launch failure, not a soft downgrade.
+# Real SSIDs need a paid Apple Developer Program membership and a matching
+# profile; Location authorization alone (src/cocoa/locationauth.mm) needs
+# none of that and still makes Quickshell appear in Location Services.
 codesign -f -s "$IDENTITY" "$APP" >/dev/null 2>&1 \
     || { echo "qs-bundle: codesign with identity '$IDENTITY' failed" >&2; codesign -f -s "$IDENTITY" "$APP"; exit 1; }
 
