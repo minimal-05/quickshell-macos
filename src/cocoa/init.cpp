@@ -17,6 +17,7 @@
 #include "nswindow.hpp"
 #include "panel_window.hpp"
 #include "clipboard.hpp" // round2/native-input
+#include "locationauth.hpp"
 
 namespace {
 
@@ -234,6 +235,12 @@ class CocoaPlugin: public QsEnginePlugin {
 		);
 
 		qs::cocoa::startClipboardWatch(); // round2/native-input
+
+		// src/launch/tools.cpp execs every qs-* tool before Qt exists, so this
+		// only ever runs for the real interactive shell -- once, harmlessly, no
+		// gating needed. See locationauth.hpp for why the request itself matters
+		// even though nothing here reads a location.
+		qs::cocoa::requestLocationAuthorization();
 	}
 
 	void registerTypes() override {
