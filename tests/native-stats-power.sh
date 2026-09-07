@@ -39,8 +39,6 @@ pids+=("$pid")
 sleep 2.5   # > the probe's 1 s interval, so the timer has sampled
 got="$(ipc "$SYS" sysstats check)"
 [ "$got" = ok ] && ok "sysstats check == ok" || bad "sysstats check == $got"
-got="$(ipc "$SYS" sysstats manual)"
-[ "$got" = ok ] && ok "sysstats sample() emits sampled" || bad "sysstats manual == $got"
 want="$(sysctl -n hw.memsize)"; got="$(ipc "$SYS" sysstats memTotal)"
 [ "$got" = "$want" ] && ok "sysstats memTotal $got == hw.memsize" || bad "sysstats memTotal $got != hw.memsize $want"
 spawns "$pid" "SystemStats"

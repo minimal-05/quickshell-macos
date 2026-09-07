@@ -39,7 +39,7 @@ target_link_libraries(quickshell PRIVATE quickshell-cocoaplugin quickshell-cocoa
 add_subdirectory(wayland)
 
 # IOKit for the power sources and the AppleSmartBattery registry node (power.mm).
-target_link_libraries(quickshell-cocoa PRIVATE "-framework IOKit") # round2/native-stats-power
+target_link_libraries(quickshell-cocoa PRIVATE "-framework IOKit" "-framework CoreGraphics") # round2/native-stats-power
 # round2/native-input: GlobalShortcut chords via Carbon RegisterEventHotKey, and
 # the default chord table compiled in from shortcuts.json so a fresh checkout
 # has working hotkeys before a copy of that file lands in ~/.config/quickshell-macos.
