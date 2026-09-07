@@ -21,3 +21,7 @@
 
 # qs-perf appends one line per run; local measurement log, not shared history.
 tests/perf-history.jsonl
+
+# Local build output and Python bytecode.
+/build.log
+__pycache__/

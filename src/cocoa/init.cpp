@@ -36,9 +36,8 @@ namespace {
 // the click landed. Every other popup in a config -- tray menus, bar popups,
 // tooltips -- had the same hole.
 //
-// Deliberately a second poller rather than sharing the panel one: that list is
-// keyed on CocoaPanelWindow and a popup has no such object. Merge them if a
-// third kind of window ever needs this.
+// A second list rather than the panel one, which is keyed on CocoaPanelWindow
+// and a popup has no such object; both feed qs::cocoa::feedPointer.
 struct PopupPointer {
 	QPointer<QWindow> window;
 	bool inside = false;
@@ -58,50 +57,7 @@ void updatePopupPointer(PopupPointer& state, const QPoint& rawPointer) {
 		return;
 	}
 
-	// QCursor::pos() is rounded, and the bottom row of a screen can round to one
-	// past the last pixel a bottom-anchored panel covers. Shoving the mouse hard
-	// into the bottom edge -- exactly how you open an auto-hiding dock -- then
-	// read as *outside* the dock, so it refused to open at the one position the
-	// gesture always ends at, while a few pixels higher worked fine. A position
-	// at most a pixel outside the screen is that rounding, not a real place the
-	// pointer can be; pull it back on.
-	auto pointer = rawPointer;
-	if (auto* pointerScreen = window->screen()) {
-		auto rect = pointerScreen->geometry();
-		if (rect.adjusted(-1, -1, 1, 1).contains(pointer)) {
-			pointer.setX(qBound(rect.left(), pointer.x(), rect.right()));
-			pointer.setY(qBound(rect.top(), pointer.y(), rect.bottom()));
-		}
-	}
-
-	auto inside = window->geometry().contains(pointer);
-	auto left = state.inside && !inside;
-	state.inside = inside;
-
-	if (left) {
-		state.lastPointer = QPoint(-1, -1);
-		QCoreApplication::postEvent(window, new QEvent(QEvent::Leave));
-		return;
-	}
-
-	// Unchanged position means nothing to say, which is what keeps this idle
-	// while the pointer rests inside a popup.
-	if (!inside || pointer == state.lastPointer) return;
-	state.lastPointer = pointer;
-
-	auto local = QPointF(pointer - window->geometry().topLeft());
-
-	QCoreApplication::postEvent(
-	    window,
-	    new QMouseEvent(
-	        QEvent::MouseMove,
-	        local,
-	        QPointF(pointer),
-	        Qt::NoButton,
-	        Qt::NoButton,
-	        Qt::NoModifier
-	    )
-	);
+	qs::cocoa::feedPointer(window, rawPointer, state.inside, state.lastPointer);
 }
 
 void trackPopupPointer(QWindow* window) {

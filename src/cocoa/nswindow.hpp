@@ -1,7 +1,11 @@
 #pragma once
 
+#include <qpoint.h>
 #include <qtypes.h>
 #include <qwindowdefs.h>
+
+class QRegion;
+class QWindow;
 
 namespace qs::cocoa {
 
@@ -155,6 +159,25 @@ bool interactiveScreenCaptureActive();
 /// Synthetic moves never exercise that path (see bin/qs-probe), which is exactly
 /// why guarding the pollers alone looked like a complete fix and was not.
 bool syncCaptureInertness();
+
+/// Feed one cursor sample to @p window as the hover AppKit never delivers to
+/// an accessory process (only the frontmost application gets pointer events,
+/// and a shell never is): a Leave on the tick the pointer stops hitting the
+/// window, and a MouseMove on every tick it is over it at a new position. Not
+/// only on the crossing -- Qt picks the hovered item out of each move's
+/// position, so a single move on entry hovers whatever was under the pointer
+/// then and nothing ever moves the hover on; the dock would open the preview
+/// for the icon you landed on and refuse to switch to its neighbours. The
+/// unchanged-position check is what keeps this idle while the pointer rests.
+///
+/// @p raw is QCursor::pos(). A sample at most a pixel outside the window's
+/// screen is pulled back onto it: QCursor::pos() rounds, and the bottom row
+/// can round to one past the last pixel a bottom-anchored panel covers --
+/// exactly where the shove that opens an auto-hiding dock ends, which then
+/// read as *outside* the dock. @p mask, when given, is the hit-test region in
+/// window coordinates (PanelWindow.mask). @p inside and @p last are the
+/// caller's state for that window. Returns the new inside state.
+bool feedPointer(QWindow* window, QPoint raw, bool& inside, QPoint& last, const QRegion* mask = nullptr);
 
 /// True while any mouse button is down anywhere on the desktop.
 ///

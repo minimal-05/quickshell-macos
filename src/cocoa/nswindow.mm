@@ -8,10 +8,16 @@
 #include <cstring>
 #include <vector>
 
+#include <qcoreapplication.h>
 #include <qelapsedtimer.h>
+#include <qevent.h>
 #include <qhash.h>
 #include <qlogging.h>
+#include <qpoint.h>
+#include <qregion.h>
+#include <qscreen.h>
 #include <qtypes.h>
+#include <qwindow.h>
 #include <qwindowdefs.h>
 
 namespace qs::cocoa {
@@ -626,6 +632,51 @@ void unfocusPanel() {
 }
 
 void unregisterPanel(WId view) { panelConfigs().remove(view); }
+
+bool feedPointer(QWindow* window, QPoint raw, bool& inside, QPoint& last, const QRegion* mask) {
+	auto pointer = raw;
+	if (auto* screen = window->screen()) {
+		auto rect = screen->geometry();
+		if (rect.adjusted(-1, -1, 1, 1).contains(pointer)) {
+			pointer.setX(qBound(rect.left(), pointer.x(), rect.right()));
+			pointer.setY(qBound(rect.top(), pointer.y(), rect.bottom()));
+		}
+	}
+
+	auto geometry = window->geometry();
+	auto local = pointer - geometry.topLeft();
+	auto hit = geometry.contains(pointer) && (mask == nullptr || mask->contains(local));
+	auto left = inside && !hit;
+	inside = hit;
+
+	if (left) {
+		// Forget where the pointer was, or coming back to the exact pixel it left
+		// from matches the unchanged-position check and posts no move -- leaving
+		// Qt with a Leave and nothing to undo it.
+		last = QPoint(-1, -1);
+		QCoreApplication::postEvent(window, new QEvent(QEvent::Leave));
+		return false;
+	}
+
+	// Real moves, when they do arrive, carry the same coordinates, so the two
+	// paths agree rather than fighting.
+	if (!hit || pointer == last) return hit;
+	last = pointer;
+
+	QCoreApplication::postEvent(
+	    window,
+	    new QMouseEvent(
+	        QEvent::MouseMove,
+	        QPointF(local),
+	        QPointF(pointer),
+	        Qt::NoButton,
+	        Qt::NoButton,
+	        Qt::NoModifier
+	    )
+	);
+
+	return true;
+}
 
 bool anyMouseButtonHeld() {
 	// System-wide button state, whichever application the press went to.
