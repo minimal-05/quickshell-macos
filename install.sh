@@ -66,6 +66,5 @@ cat <<EOF
 
   If you keep this repo somewhere other than ~/Projects/quickshell-macos,
   update the absolute paths in ~/.config/karabiner/karabiner.json and
-  ~/.config/skhd/skhdrc — they call bin/qs-ipc directly (qs-install-keybinds
-  rewrites the skhd block).
+  ~/.config/skhd/skhdrc — they call bin/qs-ipc directly.
 EOF

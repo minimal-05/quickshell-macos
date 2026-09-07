@@ -85,7 +85,7 @@ spawns "$pid" "UPower shim"
 kill "$pid" 2>/dev/null
 
 # --- ResourceUsage in the shell config ----------------------------------------
-# Same scratch layout tests/sysstats.sh uses: symlinks to the config's entries
+# Scratch layout: symlinks to the config's entries
 # plus the probe, so `qs.*` resolves and the live shell is never addressed.
 CFG="${QS_CONFIG_ROOT:-$HOME/.config/quickshell}"
 if [ -d "$CFG/services" ]; then

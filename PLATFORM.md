@@ -218,9 +218,16 @@ cross-platform Quickshell.
 - Hot keys and skhd must not share a chord: skhd's event tap swallows the key
   before the hot key sees it, and a stale `qs-ipc ... toggle` line would fire an
   action a second time. `Hotkeys` therefore skips any chord skhdrc binds (logged
-  at startup), and `qs-install-keybinds` leaves skhd only the settings window.
-  Both files are read once per shell start. Synthetic key events reach hot keys
+  at startup); skhd keeps only what is not a `GlobalShortcut`, such as opening
+  the settings window. Both files are read once per shell start. Synthetic key events reach hot keys
   for letter keys, not for F17-F19 (`tests/hotkeys.sh` relies on that).
+- Shortcuts are seeded by `cp src/cocoa/shortcuts.json ~/.config/quickshell-macos/`;
+  delete the copy to go back to the compiled-in table.
+- macOS draws its own banner for anything the notification bridge also shows.
+  The per-source alert style lives in `~/Library/Preferences/com.apple.ncprefs`
+  (`apps[].flags` bits 3-4: 0 none, 1 banners, 2 alerts); edit it through
+  `defaults export/import com.apple.ncprefs` and `killall usernoted`, and the
+  bridge still sees the notification.
 
 ## TCC identity
 
@@ -305,8 +312,7 @@ security find-identity -v -p codesigning        # now lists "Quickshell Dev"
 System Settings → **Privacy & Security**. In each list press **+** (or drag
 `Quickshell.app` from the repo root into the list) and enable the toggle:
 
-- **Screen Recording** — window thumbnails (`qs-window-thumbs`), the
-  screenshot / region tools, `ScreencopyView`.
+- **Screen Recording** — the screenshot / region tools, `ScreencopyView`.
 - **Accessibility** — event taps, focus grabs, window management helpers.
 - **Full Disk Access** — the notification bridge reads Notification Center's
   database.

@@ -5,7 +5,7 @@ import qs.services
 
 // Throwaway root that instantiates only services/ResourceUsage.qml from the
 // shell config. `qs.*` imports resolve against the root file's directory, so
-// tests/sysstats.sh copies this next to a scratch view of the config and runs
+// tests/native-stats-power.sh copies this next to a scratch view of the config and runs
 //   quickshell -p <scratch>/_probe_resourceusage.qml ipc call probe check   -> "ok"
 // (needs two samples, i.e. > updateInterval of wall time, before checking)
 ShellRoot {
