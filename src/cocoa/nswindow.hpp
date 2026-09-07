@@ -21,37 +21,29 @@ enum class PanelLayer : quint8 {
 	Overlay = 3,
 };
 
-/// Which open/close animation a panel plays.
+/// Play the open or close animation on the window backing @p view.
 ///
 /// On Linux these come from the compositor. end-4's Hyprland config sets them in
-/// hyprland/general.lua, and they are what this reproduces exactly:
+/// hyprland/general.lua, applies them to every layer surface, and they are what
+/// this reproduces exactly:
 ///
 ///     layersIn       speed 2.7   emphasizedDecel   popin 93%
 ///     layersOut      speed 2.4   menu_accel        popin 94%
 ///     fadeLayersIn   speed 0.5   menu_decel
 ///     fadeLayersOut  speed 2.7   stall
 ///
-/// Note the style is `popin`, not `slide`: a layer surface scales up from 93% of
-/// its size rather than travelling in from an edge, and the fade is a separate
-/// animation with its own curve and duration. macOS has no compositor doing any
-/// of this, so without it the panels blink in and out.
-enum class PanelAnimation : quint8 {
-	/// Appear and disappear with no transition.
-	None = 0,
-	/// Scale up from a fraction of full size while fading, and back down on
-	/// close. Hyprland's `popin`, which end-4 applies to every layer surface.
-	Popin = 1,
-};
-
-/// Play @p animation on the window backing @p view.
+/// The style is `popin`, not `slide`: the surface scales up from 93% of its
+/// size about its centre rather than travelling in from an edge -- which is
+/// also why it is safe for a surface the pointer is hovering -- and the fade
+/// is a separate animation with its own curve and duration. macOS has no
+/// compositor doing any of this, so without it the panels blink in and out.
 ///
 /// @p opening selects the direction: the rendered content scales up onto full
 /// size, or down off it. The window's own frame never moves -- the scale is a
 /// transform on the content view's layer, so Qt Quick is not asked to re-lay-out
-/// the panel on every tick the way a frame animation would. The caller is
-/// responsible for showing the window before an opening animation and hiding it
-/// @p durationMs after a closing one.
-void animatePanel(WId view, PanelAnimation animation, bool opening, int durationMs);
+/// the panel on every tick the way a frame animation would. The caller shows
+/// the window before an opening animation and hides it after a closing one.
+void animatePanel(WId view, bool opening);
 
 /// Stop any animation on @p view and restore full opacity.
 ///

@@ -354,16 +354,6 @@ void CocoaPanelWindow::updatePointerInside(const QPoint& rawPointer) {
 	}
 }
 
-PanelAnimation CocoaPanelWindow::openCloseAnimation() const {
-	// Upstream applies layersIn/layersOut to every layer surface without
-	// exception, bar popups included, so there is nothing to select on here.
-	// popin scales about the centre and never leaves the panel's resting area,
-	// which is also why it is safe for a surface the pointer is hovering: unlike
-	// a slide, it does not move out from under the cursor.
-	if (this->window == nullptr || !this->mAnimate) return PanelAnimation::None;
-	return PanelAnimation::Popin;
-}
-
 void CocoaPanelWindow::setAnimate(bool animate) {
 	if (animate == this->mAnimate) return;
 	this->mAnimate = animate;
@@ -405,13 +395,13 @@ void CocoaPanelWindow::releaseHiddenGraphics() {
 }
 
 void CocoaPanelWindow::setVisibleDirect(bool visible) {
-	auto animation = this->openCloseAnimation();
+	auto animated = this->mAnimate && this->window != nullptr;
 
 	// Nothing to play: show and hide immediately, exactly as this did before any
-	// of the animation machinery existed. Taking the animated path with a None
-	// animation would still hold the hide back by a full close duration, which a
-	// surface created and destroyed as fast as a hover popup cannot absorb.
-	if (animation == PanelAnimation::None) {
+	// of the animation machinery existed. Taking the animated path anyway would
+	// still hold the hide back by a full close duration, which a surface created
+	// and destroyed as fast as a hover popup cannot absorb.
+	if (!animated) {
 		this->mAnimationTimer.stop();
 		this->mClosing = false;
 
@@ -456,7 +446,7 @@ void CocoaPanelWindow::setVisibleDirect(bool visible) {
 		// frame the animation plays on. Place it before scaling it.
 		this->updateDimensions();
 
-		animatePanel(this->window->winId(), animation, true, ANIMATION_OPEN_MS);
+		animatePanel(this->window->winId(), true);
 		this->mAnimationTimer.start(ANIMATION_OPEN_MS);
 
 		if (this->bFocusable.value()) focusPanel(this->window->winId());
@@ -476,7 +466,7 @@ void CocoaPanelWindow::setVisibleDirect(bool visible) {
 
 		this->mClosing = true;
 		if (this->bFocusable.value()) unfocusPanel();
-		animatePanel(this->window->winId(), animation, false, ANIMATION_CLOSE_MS);
+		animatePanel(this->window->winId(), false);
 		this->mAnimationTimer.start(ANIMATION_CLOSE_MS);
 	}
 }

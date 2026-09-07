@@ -284,9 +284,9 @@ constexpr auto POPIN_OUT_SCALE = 0.94;  // popin 94%
 
 } // namespace
 
-void animatePanel(WId view, PanelAnimation animation, bool opening, int durationMs) {
+void animatePanel(WId view, bool opening) {
 	auto* window = windowFor(view);
-	if (window == nil || animation == PanelAnimation::None || durationMs <= 0) return;
+	if (window == nil) return;
 
 	auto* contentView = window.contentView;
 	if (contentView == nil) return;

@@ -190,7 +190,6 @@ private:
 	void updateDimensionsCb() { this->updateDimensions(); }
 	void updateFocusable();
 
-	[[nodiscard]] PanelAnimation openCloseAnimation() const;
 	void finishOpenCloseAnimation();
 
 	/// Release the native window behind a panel that has stayed hidden.
