@@ -1,7 +1,11 @@
 #pragma once
 
+#include <qpoint.h>
 #include <qtypes.h>
 #include <qwindowdefs.h>
+
+class QRegion;
+class QWindow;
 
 namespace qs::cocoa {
 
@@ -17,37 +21,29 @@ enum class PanelLayer : quint8 {
 	Overlay = 3,
 };
 
-/// Which open/close animation a panel plays.
+/// Play the open or close animation on the window backing @p view.
 ///
 /// On Linux these come from the compositor. end-4's Hyprland config sets them in
-/// hyprland/general.lua, and they are what this reproduces exactly:
+/// hyprland/general.lua, applies them to every layer surface, and they are what
+/// this reproduces exactly:
 ///
 ///     layersIn       speed 2.7   emphasizedDecel   popin 93%
 ///     layersOut      speed 2.4   menu_accel        popin 94%
 ///     fadeLayersIn   speed 0.5   menu_decel
 ///     fadeLayersOut  speed 2.7   stall
 ///
-/// Note the style is `popin`, not `slide`: a layer surface scales up from 93% of
-/// its size rather than travelling in from an edge, and the fade is a separate
-/// animation with its own curve and duration. macOS has no compositor doing any
-/// of this, so without it the panels blink in and out.
-enum class PanelAnimation : quint8 {
-	/// Appear and disappear with no transition.
-	None = 0,
-	/// Scale up from a fraction of full size while fading, and back down on
-	/// close. Hyprland's `popin`, which end-4 applies to every layer surface.
-	Popin = 1,
-};
-
-/// Play @p animation on the window backing @p view.
+/// The style is `popin`, not `slide`: the surface scales up from 93% of its
+/// size about its centre rather than travelling in from an edge -- which is
+/// also why it is safe for a surface the pointer is hovering -- and the fade
+/// is a separate animation with its own curve and duration. macOS has no
+/// compositor doing any of this, so without it the panels blink in and out.
 ///
 /// @p opening selects the direction: the rendered content scales up onto full
 /// size, or down off it. The window's own frame never moves -- the scale is a
 /// transform on the content view's layer, so Qt Quick is not asked to re-lay-out
-/// the panel on every tick the way a frame animation would. The caller is
-/// responsible for showing the window before an opening animation and hiding it
-/// @p durationMs after a closing one.
-void animatePanel(WId view, PanelAnimation animation, bool opening, int durationMs);
+/// the panel on every tick the way a frame animation would. The caller shows
+/// the window before an opening animation and hides it after a closing one.
+void animatePanel(WId view, bool opening);
 
 /// Stop any animation on @p view and restore full opacity.
 ///
@@ -131,9 +127,6 @@ void setPanelInputEnabled(WId view, bool enabled);
 /// Stop tracking a window previously passed to registerPanel.
 void unregisterPanel(WId view);
 
-/// Re-apply native state to every registered window.
-void reapplyPanels();
-
 /// True while an interactive screen capture is waiting on the user.
 ///
 /// The panel and popup pointer pollers synthesise mouse moves into Qt from the
@@ -156,15 +149,31 @@ bool interactiveScreenCaptureActive();
 /// why guarding the pollers alone looked like a complete fix and was not.
 bool syncCaptureInertness();
 
+/// Feed one cursor sample to @p window as the hover AppKit never delivers to
+/// an accessory process (only the frontmost application gets pointer events,
+/// and a shell never is): a Leave on the tick the pointer stops hitting the
+/// window, and a MouseMove on every tick it is over it at a new position. Not
+/// only on the crossing -- Qt picks the hovered item out of each move's
+/// position, so a single move on entry hovers whatever was under the pointer
+/// then and nothing ever moves the hover on; the dock would open the preview
+/// for the icon you landed on and refuse to switch to its neighbours. The
+/// unchanged-position check is what keeps this idle while the pointer rests.
+///
+/// @p raw is QCursor::pos(). A sample at most a pixel outside the window's
+/// screen is pulled back onto it: QCursor::pos() rounds, and the bottom row
+/// can round to one past the last pixel a bottom-anchored panel covers --
+/// exactly where the shove that opens an auto-hiding dock ends, which then
+/// read as *outside* the dock. @p mask, when given, is the hit-test region in
+/// window coordinates (PanelWindow.mask). @p inside and @p last are the
+/// caller's state for that window. Returns the new inside state.
+bool feedPointer(QWindow* window, QPoint raw, bool& inside, QPoint& last, const QRegion* mask = nullptr);
+
 /// True while any mouse button is down anywhere on the desktop.
 ///
 /// Asked of the window server, not of QGuiApplication::mouseButtons(): that
 /// only knows about presses Qt itself processed, and a shell's panels sit under
 /// other applications' windows, so a press Qt never saw still holds the button.
 bool anyMouseButtonHeld();
-
-/// Run without a dock icon or application menu bar.
-void setAccessoryActivationPolicy();
 
 /// Run as an ordinary application: dock icon, app switcher, menu bar.
 ///
@@ -176,17 +185,5 @@ void setAccessoryActivationPolicy();
 /// Accessory apps' windows also don't get a normal accessibility role, which
 /// is what left yabai unable to read these windows' titles at all.
 void setRegularActivationPolicy();
-
-/// Unbind cmd-Q from the Quit item Qt installs by default.
-///
-/// A shell is not an app you quit by reflex. Qt's cocoa plugin always builds an
-/// application menu whose Quit item is wired to cmd-Q, so a stray cmd-Q aimed at
-/// whatever happened to hold key status could tear the whole shell down. Quit
-/// stays available through the CLI and IPC.
-void stripQuitKeyEquivalent();
-
-/// Top inset of the screen containing @p view, in points. Zero when the display
-/// has no camera housing.
-qreal screenTopSafeAreaInset(WId view);
 
 } // namespace qs::cocoa

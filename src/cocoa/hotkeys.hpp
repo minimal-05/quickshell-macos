@@ -6,7 +6,6 @@
 #include <qqmlintegration.h>
 #include <qstring.h>
 #include <qtmetamacros.h>
-#include <qvariant.h>
 
 namespace qs::cocoa {
 
@@ -34,9 +33,6 @@ class Hotkeys: public QObject {
 	Q_OBJECT;
 	QML_ELEMENT;
 	QML_SINGLETON;
-	/// The effective table: `appid:name` to a chord string, or a list of them.
-	/// Entries skhd owns, modifier-only entries and unparsable ones are absent.
-	Q_PROPERTY(QVariantMap bindings READ bindings CONSTANT);
 
 public:
 	explicit Hotkeys(QObject* parent = nullptr);
@@ -47,10 +43,6 @@ public:
 	/// serves every GlobalShortcut declaring the same name.
 	Q_INVOKABLE void bind(const QString& appid, const QString& name);
 	Q_INVOKABLE void unbind(const QString& appid, const QString& name);
-	/// The chords of `appid:name` joined by ", "; empty when nothing is bound.
-	Q_INVOKABLE [[nodiscard]] QString chord(const QString& appid, const QString& name) const;
-
-	[[nodiscard]] QVariantMap bindings() const { return this->mBindings; }
 
 	// Entry point for the Carbon handler; one chord id per registered chord.
 	void dispatch(quint32 chordId, bool pressed);
@@ -60,16 +52,10 @@ signals:
 	void released(const QString& appid, const QString& name);
 
 private:
-	struct Bound {
-		int refs = 0;
-		QList<quint32> chords;
-	};
-
 	void loadTable();
 
-	QVariantMap mBindings;
 	QHash<QString, QList<quint32>> mChords; // "appid:name" -> chord ids
-	QHash<QString, Bound> mBound;
+	QHash<QString, int> mBound;             // "appid:name" -> bind() refcount
 	QHash<quint32, QStringList> mListeners; // chord id -> bound "appid:name"s
 };
 

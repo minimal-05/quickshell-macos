@@ -2,7 +2,6 @@
 
 #import <AppKit/AppKit.h>
 
-#include <qbytearray.h>
 #include <qhash.h>
 #include <qimage.h>
 #include <qpixmap.h>
@@ -13,10 +12,6 @@ namespace qs::cocoa {
 
 namespace {
 
-NSString* toNSString(const QString& s) {
-	return [NSString stringWithUTF8String:s.toUtf8().constData()];
-}
-
 /// Resolve a name to an application bundle path.
 ///
 /// Names arrive in several shapes: a bundle id ("org.mozilla.firefox"), a
@@ -26,7 +21,7 @@ NSString* bundlePathFor(const QString& name) {
 	if (name.isEmpty()) return nil;
 
 	auto* workspace = NSWorkspace.sharedWorkspace;
-	auto* raw = toNSString(name);
+	auto* raw = name.toNSString();
 
 	if (name.contains('.')) {
 		auto* url = [workspace URLForApplicationWithBundleIdentifier:raw];
@@ -45,24 +40,44 @@ NSString* bundlePathFor(const QString& name) {
 QPixmap toPixmap(NSImage* image, const QSize& size) {
 	if (image == nil) return {};
 
-	auto target = NSMakeSize(size.width(), size.height());
-	image.size = target;
-
-	auto* rep = [NSBitmapImageRep
-	    imageRepWithData:[image TIFFRepresentation]];
-	if (rep == nil) return {};
-
-	auto* png = [rep representationUsingType:NSBitmapImageFileTypePNG properties:@{}];
-	if (png == nil) return {};
-
-	auto bytes = QByteArray(static_cast<const char*>(png.bytes), static_cast<qsizetype>(png.length));
-
-	QPixmap pixmap;
-	if (!pixmap.loadFromData(bytes, "PNG")) return {};
-	return pixmap;
+	// The best representation for that size, rendered once; no TIFF/PNG
+	// round trip through NSBitmapImageRep.
+	auto rect = NSMakeRect(0, 0, size.width(), size.height());
+	auto* cg = [image CGImageForProposedRect:&rect context:nil hints:nil];
+	return cg != nullptr ? QPixmap::fromImage(imageFromCGImage(cg)) : QPixmap();
 }
 
 } // namespace
+
+QImage imageFromCGImage(CGImageRef image) {
+	auto width = static_cast<int>(CGImageGetWidth(image));
+	auto height = static_cast<int>(CGImageGetHeight(image));
+	if (width <= 0 || height <= 0) return {};
+
+	QImage out(width, height, QImage::Format_ARGB32_Premultiplied);
+	out.fill(Qt::transparent);
+
+	auto* colorSpace = CGColorSpaceCreateDeviceRGB();
+	auto* context = CGBitmapContextCreate(
+	    out.bits(),
+	    static_cast<size_t>(width),
+	    static_cast<size_t>(height),
+	    8,
+	    static_cast<size_t>(out.bytesPerLine()),
+	    colorSpace,
+	    static_cast<uint32_t>(kCGImageAlphaPremultipliedFirst) | static_cast<uint32_t>(kCGBitmapByteOrder32Little)
+	);
+
+	if (context != nullptr) {
+		CGContextDrawImage(context, CGRectMake(0, 0, width, height), image);
+		CGContextRelease(context);
+	} else {
+		out = QImage();
+	}
+
+	CGColorSpaceRelease(colorSpace);
+	return out;
+}
 
 QPixmap appIcon(const QString& name, const QSize& size) {
 	// Icon lookups happen per window per repaint in some configs, and asking

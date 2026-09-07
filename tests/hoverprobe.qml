@@ -27,6 +27,8 @@ ShellRoot {
     PanelWindow {
         anchors { top: true; left: true; right: true }
         implicitHeight: 40
+        // QS_PROBE_FOCUSABLE=1 runs the same table on a focusable panel.
+        focusable: Quickshell.env("QS_PROBE_FOCUSABLE") === "1"
         color: "#4400ff88"
 
         MouseArea {

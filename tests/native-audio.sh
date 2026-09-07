@@ -12,13 +12,16 @@
 #
 # The user's output volume, mute state and input volume are captured first and
 # put back exactly at the end, whatever happened in between.
+#
+# SwitchAudioSource is only this test's oracle -- runtime audio is CoreAudio
+# in-process -- so install.sh does not pull it in: `brew install switchaudio-osx`
+# by hand before running this.
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BINARY="${QS_BINARY:-$ROOT/bin/qs}"
 QML="$ROOT/tests/_probe_audio.qml"
 PERF="${PERF:-0}"
 export PATH="$ROOT/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
-export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp/quickshell-$UID}"
 
 fail=0
 ok()  { printf '  PASS  %s\n' "$1"; }

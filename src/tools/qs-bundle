@@ -73,7 +73,7 @@ cp "$SRC" "$EXE.new"
 mv "$EXE.new" "$EXE"
 
 # The tools are staged the same way, as a whole directory, so a shell that
-# spawns qs-sysstats every three seconds never sees a half-populated one.
+# spawns a tool mid-install never sees a half-populated one.
 NEW="$TOOLS.new"
 rm -rf "$NEW" "$TOOLS.old"
 mkdir -p "$NEW"
@@ -121,7 +121,7 @@ codesign -f -s "$IDENTITY" "$APP" >/dev/null 2>&1 \
 # bin/: qs plus one symlink onto it per tool, so PATH keeps its one entry and
 # the absolute paths skhd, karabiner and launchd hold (bin/qs-ipc, bin/qs-start)
 # keep working. Stale links go; so do the artefacts of the pre-bundle layout.
-rm -rf "$ROOT/bin/quickshell" "$ROOT/bin/menus" "$ROOT/bin/qs-sysstats.bin" "$ROOT/bin/__pycache__"
+rm -rf "$ROOT/bin/quickshell" "$ROOT/bin/menus" "$ROOT/bin/__pycache__"
 for link in "$ROOT/bin"/*; do
     if [ -L "$link" ] && [ ! -x "$TOOLS/$(basename "$link")" ]; then rm -f "$link"; fi
 done

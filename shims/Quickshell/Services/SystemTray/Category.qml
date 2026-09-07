@@ -4,7 +4,7 @@ pragma Singleton
 //
 // REAL: enum values copied verbatim from
 // quickshell/src/services/status_notifier/item.hpp (namespace qs::service::sni::Category).
-// `Category` is the upstream QML type name; SystemTrayCategory.qml is a same-valued alias.
+// `Category` is the upstream QML type name.
 
 import QtQuick
 

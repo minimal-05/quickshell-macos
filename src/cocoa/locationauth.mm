@@ -2,9 +2,9 @@
 
 #import <CoreLocation/CoreLocation.h>
 
-// CLLocationManagerDelegate needs a real Objective-C type; same split as
-// QsCocoaPanelObserver in nswindow.mm (the ObjC class sits at file scope, the
-// C++ entry point lives in qs::cocoa below). Nothing here needs the callback
+// CLLocationManagerDelegate needs a real Objective-C type (a block observer
+// would not do): the ObjC class sits at file scope, the C++ entry point lives
+// in qs::cocoa below. Nothing here needs the callback
 // itself -- an empty implementation is enough for locationd to treat the
 // manager as a real listener rather than a fire-and-forget request.
 @interface QsLocationAuthDelegate: NSObject <CLLocationManagerDelegate>

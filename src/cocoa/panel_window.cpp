@@ -195,16 +195,16 @@ void CocoaReservation::publish() {
 	QProcess::startDetached(yabai, {"-m", "config", "external_bar", value});
 }
 
-bool CocoaPanelEventFilter::eventFilter(QObject* watched, QEvent* event) {
+bool CocoaPanelWindow::eventFilter(QObject* watched, QEvent* event) {
 	if (event->type() == QEvent::PlatformSurface) {
 		auto* surfaceEvent = static_cast<QPlatformSurfaceEvent*>(event); // NOLINT
 
 		if (surfaceEvent->surfaceEventType() == QPlatformSurfaceEvent::SurfaceCreated) {
-			emit this->surfaceCreated();
+			this->cocoaInit();
 		}
 	}
 
-	return this->QObject::eventFilter(watched, event);
+	return this->ProxyWindowBase::eventFilter(watched, event);
 }
 
 CocoaPanelWindow::CocoaPanelWindow(QObject* parent): ProxyWindowBase(parent) {
@@ -213,13 +213,6 @@ CocoaPanelWindow::CocoaPanelWindow(QObject* parent): ProxyWindowBase(parent) {
 	// for it would leave a config whose panels start hidden holding the
 	// activation Qt took at launch.
 	becomeShellProcess();
-
-	QObject::connect(
-	    &this->eventFilter,
-	    &CocoaPanelEventFilter::surfaceCreated,
-	    this,
-	    &CocoaPanelWindow::cocoaInit
-	);
 
 	this->bcExclusiveZone.setBinding([this]() -> qint32 {
 		switch (this->bExclusionMode.value()) {
@@ -337,25 +330,13 @@ void CocoaPanelWindow::updatePointerInside(const QPoint& rawPointer) {
 		return;
 	}
 
-	// QCursor::pos() is rounded, and the bottom row of a screen can round to one
-	// past the last pixel a bottom-anchored panel covers. Shoving the mouse hard
-	// into the bottom edge -- exactly how you open an auto-hiding dock -- then
-	// read as *outside* the dock, so it refused to open at the one position the
-	// gesture always ends at, while a few pixels higher worked fine. A position
-	// at most a pixel outside the screen is that rounding, not a real place the
-	// pointer can be; pull it back on.
-	auto pointer = rawPointer;
-	if (auto* pointerScreen = this->window->screen()) {
-		auto rect = pointerScreen->geometry();
-		if (rect.adjusted(-1, -1, 1, 1).contains(pointer)) {
-			pointer.setX(qBound(rect.left(), pointer.x(), rect.right()));
-			pointer.setY(qBound(rect.top(), pointer.y(), rect.bottom()));
-		}
-	}
-
-	auto geometry = this->window->geometry();
-	auto local = pointer - geometry.topLeft();
-	auto inside = geometry.contains(pointer) && (!this->mHasMask || this->mMaskRegion.contains(local));
+	auto inside = feedPointer(
+	    this->window,
+	    rawPointer,
+	    this->mPointerInside,
+	    this->mLastPointer,
+	    this->mHasMask ? &this->mMaskRegion : nullptr
+	);
 
 	// The native input switch follows the mask, not the window: with a mask
 	// set, the panel takes input only while the pointer is in it, so a click
@@ -364,64 +345,6 @@ void CocoaPanelWindow::updatePointerInside(const QPoint& rawPointer) {
 	if (this->mRegisteredView != 0) {
 		setPanelInputEnabled(this->mRegisteredView, !this->mHasMask || inside);
 	}
-
-	auto left = this->mPointerInside && !inside;
-	this->mPointerInside = inside;
-
-	if (left) {
-		// Forget where the pointer was, or coming back to the exact pixel it left
-		// from matches the unchanged-position check below and posts no move --
-		// leaving Qt with a Leave and nothing to undo it.
-		this->mLastPointer = QPoint(-1, -1);
-		QCoreApplication::postEvent(this->window, new QEvent(QEvent::Leave));
-		return;
-	}
-
-	// Not `if (inside != wasInside)`: the moves have to keep coming for as long
-	// as the pointer is inside, not just on the tick it crosses the edge. Qt
-	// picks the hovered item out of the position each move carries, so a single
-	// move on entry hovers whatever was under the pointer at that instant and
-	// then nothing ever moves the hover again -- the dock would open the preview
-	// for the icon you landed on and refuse to switch to its neighbours until
-	// you left the dock entirely and came back. The unchanged-position check
-	// below is what keeps this idle when the pointer is still.
-	if (!inside) return;
-
-	// Entering has to be synthesised too. AppKit only routes pointer events to
-	// the application it considers frontmost, and a shell is an accessory that
-	// never becomes frontmost on its own -- so until something makes this process
-	// active, a panel is never told the pointer is over it and nothing hover
-	// driven works. That is why the bar had to be clicked once before its
-	// dropdowns would open. Feeding Qt the moves directly removes the dependency
-	// on activation entirely.
-	//
-	// Real moves, when they do arrive, carry the same coordinates, so the two
-	// paths agree rather than fighting; a repeat at an unchanged position is
-	// skipped so this is idle when the pointer is still.
-	if (pointer == this->mLastPointer) return;
-	this->mLastPointer = pointer;
-
-	QCoreApplication::postEvent(
-	    this->window,
-	    new QMouseEvent(
-	        QEvent::MouseMove,
-	        QPointF(local),
-	        QPointF(pointer),
-	        Qt::NoButton,
-	        Qt::NoButton,
-	        Qt::NoModifier
-	    )
-	);
-}
-
-PanelAnimation CocoaPanelWindow::openCloseAnimation() const {
-	// Upstream applies layersIn/layersOut to every layer surface without
-	// exception, bar popups included, so there is nothing to select on here.
-	// popin scales about the centre and never leaves the panel's resting area,
-	// which is also why it is safe for a surface the pointer is hovering: unlike
-	// a slide, it does not move out from under the cursor.
-	if (this->window == nullptr || !this->mAnimate) return PanelAnimation::None;
-	return PanelAnimation::Popin;
 }
 
 void CocoaPanelWindow::setAnimate(bool animate) {
@@ -465,13 +388,13 @@ void CocoaPanelWindow::releaseHiddenGraphics() {
 }
 
 void CocoaPanelWindow::setVisibleDirect(bool visible) {
-	auto animation = this->openCloseAnimation();
+	auto animated = this->mAnimate && this->window != nullptr;
 
 	// Nothing to play: show and hide immediately, exactly as this did before any
-	// of the animation machinery existed. Taking the animated path with a None
-	// animation would still hold the hide back by a full close duration, which a
-	// surface created and destroyed as fast as a hover popup cannot absorb.
-	if (animation == PanelAnimation::None) {
+	// of the animation machinery existed. Taking the animated path anyway would
+	// still hold the hide back by a full close duration, which a surface created
+	// and destroyed as fast as a hover popup cannot absorb.
+	if (!animated) {
 		this->mAnimationTimer.stop();
 		this->mClosing = false;
 
@@ -516,7 +439,7 @@ void CocoaPanelWindow::setVisibleDirect(bool visible) {
 		// frame the animation plays on. Place it before scaling it.
 		this->updateDimensions();
 
-		animatePanel(this->window->winId(), animation, true, ANIMATION_OPEN_MS);
+		animatePanel(this->window->winId(), true);
 		this->mAnimationTimer.start(ANIMATION_OPEN_MS);
 
 		if (this->bFocusable.value()) focusPanel(this->window->winId());
@@ -536,7 +459,7 @@ void CocoaPanelWindow::setVisibleDirect(bool visible) {
 
 		this->mClosing = true;
 		if (this->bFocusable.value()) unfocusPanel();
-		animatePanel(this->window->winId(), animation, false, ANIMATION_CLOSE_MS);
+		animatePanel(this->window->winId(), false);
 		this->mAnimationTimer.start(ANIMATION_CLOSE_MS);
 	}
 }
@@ -570,7 +493,7 @@ CocoaPanelWindow::~CocoaPanelWindow() {
 void CocoaPanelWindow::connectWindow() {
 	this->ProxyWindowBase::connectWindow();
 
-	this->window->installEventFilter(&this->eventFilter);
+	this->window->installEventFilter(this);
 	this->updateScreen();
 
 	QObject::connect(

@@ -15,7 +15,7 @@ brew install --quiet qt cmake ninja pkgconf
 
 say "Runtime dependencies"
 # What the bin/qs-* launchers shell out to.
-brew install --quiet jq media-control switchaudio-osx
+brew install --quiet jq media-control
 # Night Shift for the hyprsunset stand-in (bin/hyprsunset --temperature).
 brew install --quiet smudge/smudge/nightlight
 
@@ -41,16 +41,8 @@ WRAP
 chmod +x "$HOME/.local/bin/qs"
 command -v qs >/dev/null || echo "  note: ~/.local/bin is not on your PATH"
 
-say "Shell config"
-if [ -e "$HOME/.config/quickshell" ]; then
-  echo "  ~/.config/quickshell already exists, leaving it alone"
-  echo "  configs found: $(ls -d "$HOME"/.config/quickshell/*/ 2>/dev/null | xargs -n1 basename 2>/dev/null | tr '\n' ' ')"
-else
-  echo "  no shell config found — clone one:"
-  echo "    git clone https://github.com/minimal-05/darwin-dotfiles.git ~/.config"
-fi
-
-# The tools are referenced by absolute path from karabiner.json and skhdrc.
+# The shell configs (~/.config/quickshell/<name>) are darwin-dotfiles' job:
+# its install.sh lists them and warns about a shadowing top-level shell.qml.
 say "Done"
 cat <<EOF
 
@@ -58,14 +50,10 @@ cat <<EOF
   Command:     $HOME/.local/bin/qs  ->  $ROOT/bin/qs
   Tools:       $ROOT/bin/<tool> -> qs   (qs --tools lists them; qs <tool> runs one)
 
-  A config is a directory under ~/.config/quickshell, run by name:
-
-    qs -c end4        the full shell
-    qs -c mine        the small one
-    qs-start          what launchd runs at login (bridge + yabai, then qs)
+  A config is a directory under ~/.config/quickshell, run by name (qs -c end4);
+  qs-start is what launchd runs at login. Clone darwin-dotfiles for the configs.
 
   If you keep this repo somewhere other than ~/Projects/quickshell-macos,
   update the absolute paths in ~/.config/karabiner/karabiner.json and
-  ~/.config/skhd/skhdrc — they call bin/qs-ipc directly (qs-install-keybinds
-  rewrites the skhd block).
+  ~/.config/skhd/skhdrc — they call bin/qs-ipc directly.
 EOF

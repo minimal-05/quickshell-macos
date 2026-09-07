@@ -14,8 +14,6 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BINARY="${QS_BINARY:-$ROOT/bin/qs}"
 PERF="${PERF:-12}"
-export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp/quickshell-$UID}"
-export QML2_IMPORT_PATH="$ROOT/shims${QML2_IMPORT_PATH:+:$QML2_IMPORT_PATH}"
 fail=0
 ok()  { printf '  PASS  %s\n' "$1"; }
 bad() { printf '  FAIL  %s\n' "$1"; fail=1; }
@@ -31,7 +29,7 @@ spawns() {
     local n
     n="$(printf '%s\n' "$out" | sed -n 's/^children of [0-9]* over [0-9]*s: \([0-9]*\) seen.*/\1/p')"
     if [ "${n:-1}" = 0 ]; then ok "$2: 0 children over ${PERF}s"
-    else bad "$2: $n children over ${PERF}s"; printf '%s\n' "$out" | sed -n '/by command line/,$p' | sed 's/^/        /'; fi
+    else bad "$2: $n children over ${PERF}s"; printf '%s\n' "$out" | sed -n '/by command/,$p' | sed 's/^/        /'; fi
 }
 
 # --- SystemStats -----------------------------------------------------------
@@ -41,8 +39,6 @@ pids+=("$pid")
 sleep 2.5   # > the probe's 1 s interval, so the timer has sampled
 got="$(ipc "$SYS" sysstats check)"
 [ "$got" = ok ] && ok "sysstats check == ok" || bad "sysstats check == $got"
-got="$(ipc "$SYS" sysstats manual)"
-[ "$got" = ok ] && ok "sysstats sample() emits sampled" || bad "sysstats manual == $got"
 want="$(sysctl -n hw.memsize)"; got="$(ipc "$SYS" sysstats memTotal)"
 [ "$got" = "$want" ] && ok "sysstats memTotal $got == hw.memsize" || bad "sysstats memTotal $got != hw.memsize $want"
 spawns "$pid" "SystemStats"
@@ -85,7 +81,7 @@ spawns "$pid" "UPower shim"
 kill "$pid" 2>/dev/null
 
 # --- ResourceUsage in the shell config ----------------------------------------
-# Same scratch layout tests/sysstats.sh uses: symlinks to the config's entries
+# Scratch layout: symlinks to the config's entries
 # plus the probe, so `qs.*` resolves and the live shell is never addressed.
 CFG="${QS_CONFIG_ROOT:-$HOME/.config/quickshell}"
 if [ -d "$CFG/services" ]; then

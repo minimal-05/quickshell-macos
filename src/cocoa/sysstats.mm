@@ -1,7 +1,7 @@
 #include "sysstats.hpp"
 
+#include <CoreGraphics/CoreGraphics.h>
 #include <mach/mach.h>
-#include <stdlib.h>
 #include <sys/sysctl.h>
 
 namespace qs::cocoa {
@@ -58,13 +58,8 @@ void SystemStats::sample() {
 	if (host_statistics64(host, HOST_VM_INFO64, reinterpret_cast<host_info64_t>(&vm), &count)
 	    == KERN_SUCCESS)
 	{
-		auto page = this->mPageSize;
-		this->mMemFree = quint64(vm.free_count) * page;
-		this->mMemActive = quint64(vm.active_count) * page;
-		this->mMemInactive = quint64(vm.inactive_count) * page;
-		this->mMemWired = quint64(vm.wire_count) * page;
-		this->mMemCompressed = quint64(vm.compressor_page_count) * page;
-		this->mMemUsed = this->mMemActive + this->mMemWired + this->mMemCompressed;
+		auto pages = quint64(vm.active_count) + vm.wire_count + vm.compressor_page_count;
+		this->mMemUsed = pages * this->mPageSize;
 		this->mMemAvailable = this->mMemTotal > this->mMemUsed ? this->mMemTotal - this->mMemUsed : 0;
 	}
 
@@ -72,16 +67,17 @@ void SystemStats::sample() {
 	size_t len = sizeof swap;
 	if (sysctlbyname("vm.swapusage", &swap, &len, nullptr, 0) == 0) {
 		this->mSwapTotal = swap.xsu_total;
-		this->mSwapUsed = swap.xsu_used;
 		this->mSwapFree = swap.xsu_avail;
 	}
 
-	double load[3] = {0, 0, 0};
-	if (getloadavg(load, 3) == 3) {
-		this->mLoad = {load[0], load[1], load[2]};
-	}
-
 	emit this->sampled();
+}
+
+double SystemStats::idleSeconds() const {
+	return CGEventSourceSecondsSinceLastEventType(
+	    kCGEventSourceStateCombinedSessionState,
+	    kCGAnyInputEventType
+	);
 }
 
 } // namespace qs::cocoa

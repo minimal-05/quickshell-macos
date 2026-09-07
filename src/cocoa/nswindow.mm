@@ -8,10 +8,16 @@
 #include <cstring>
 #include <vector>
 
+#include <qcoreapplication.h>
 #include <qelapsedtimer.h>
+#include <qevent.h>
 #include <qhash.h>
 #include <qlogging.h>
+#include <qpoint.h>
+#include <qregion.h>
+#include <qscreen.h>
 #include <qtypes.h>
+#include <qwindow.h>
 #include <qwindowdefs.h>
 
 namespace qs::cocoa {
@@ -39,31 +45,31 @@ constexpr auto ACTIVATION_GRACE_NS = int64_t(50) * NSEC_PER_MSEC;
 /// The application that was frontmost when a focusable panel took focus, so it
 /// can be handed back on close. Stored as a pid to avoid holding a strong
 /// reference to another process's NSRunningApplication.
-pid_t& previousFrontmostPid() {
-	static pid_t pid = 0;
-	return pid;
-}
+pid_t previousFrontmostPid = 0;
 
 /// Set while a panel has asked for activation and not yet given it back, so an
 /// activation that arrives without one can be told apart from a requested one.
-bool& activationRequested() {
-	static auto requested = false;
-	return requested;
-}
+bool activationRequested = false;
 
 /// Whoever was frontmost when this process was loaded, before Qt had a chance
 /// to activate it. Read from a static initialiser: by the time any of our
 /// code runs on purpose, Qt's cocoa plugin has already made the process a
 /// regular application and LaunchServices has already brought it to front.
-pid_t& frontmostAtLaunch() {
-	static pid_t pid = 0;
-	return pid;
-}
+pid_t frontmostAtLaunch = 0;
 
 __attribute__((constructor)) void recordFrontmostAtLaunch() {
 	auto* app = NSWorkspace.sharedWorkspace.frontmostApplication;
-	if (app != nil && app.processIdentifier != getpid()) frontmostAtLaunch() = app.processIdentifier;
+	if (app != nil && app.processIdentifier != getpid()) frontmostAtLaunch = app.processIdentifier;
 }
+
+/// Whether panels are currently held inert because a screen capture owns the
+/// screen. See syncCaptureInertness.
+bool captureInert = false;
+
+/// Sticky: a hidden panel releases its native window (see
+/// CocoaPanelWindow::releaseHiddenGraphics), so the registry can be empty
+/// between shows without the process having stopped being a shell.
+bool shellProcess = false;
 
 void logActivation(const char* what, pid_t pid, NSWindow* window) {
 	qInfo("cocoa: activation %s pid=%d frontmost=%d active=%d visible=%d canKey=%d key=%d", what,
@@ -99,23 +105,16 @@ bool handActivationTo(pid_t pid) {
 /// panel, which is exactly what activation is for.
 void releaseStartupActivation() {
 	static auto handled = false;
-	if (handled || activationRequested()) return;
+	if (handled || activationRequested) return;
 	handled = true;
 
-	auto pid = frontmostAtLaunch();
+	auto pid = frontmostAtLaunch;
 	if (pid != 0 && handActivationTo(pid)) {
 		logActivation("released at startup", pid, NSApp.keyWindow);
 	} else {
 		[NSApp deactivate];
 		logActivation("released at startup (deactivate)", pid, NSApp.keyWindow);
 	}
-}
-
-/// Whether panels are currently held inert because a screen capture owns the
-/// screen. See syncCaptureInertness.
-bool& captureInert() {
-	static auto inert = false;
-	return inert;
 }
 
 NSView* viewFor(WId view) { return view == 0 ? nil : reinterpret_cast<NSView*>(view); }
@@ -175,7 +174,7 @@ void applyConfig(WId view, const PanelConfig& config) {
 	// pointer movement is delivered to it whatever is in front of the panel --
 	// taking the window out of AppKit's hit-testing is what actually stops it.
 	// The same switch is the panel's input mask (setPanelInputEnabled).
-	auto ignores = captureInert() || !config.acceptsInput;
+	auto ignores = captureInert || !config.acceptsInput;
 	if (window.ignoresMouseEvents != ignores) window.ignoresMouseEvents = ignores;
 
 	// acceptsMouseMovedEvents alone is not enough. Qt installs its own tracking
@@ -278,9 +277,9 @@ constexpr auto POPIN_OUT_SCALE = 0.94;  // popin 94%
 
 } // namespace
 
-void animatePanel(WId view, PanelAnimation animation, bool opening, int durationMs) {
+void animatePanel(WId view, bool opening) {
 	auto* window = windowFor(view);
-	if (window == nil || animation == PanelAnimation::None || durationMs <= 0) return;
+	if (window == nil) return;
 
 	auto* contentView = window.contentView;
 	if (contentView == nil) return;
@@ -355,6 +354,9 @@ void settlePanel(WId view) {
 	window.alphaValue = 1.0;
 }
 
+namespace {
+
+/// Re-apply native state to every registered window.
 void reapplyPanels() {
 	auto& configs = panelConfigs();
 	for (auto it = configs.cbegin(); it != configs.cend(); ++it) {
@@ -362,53 +364,66 @@ void reapplyPanels() {
 	}
 }
 
-} // namespace qs::cocoa
-
-// Qt's cocoa plugin re-derives window level and collection behavior whenever the
-// application's active state changes, clobbering anything set here. Re-apply on
-// both transitions.
-@interface QsCocoaPanelObserver: NSObject
-@end
-
-@implementation QsCocoaPanelObserver
-- (void)reapply:(NSNotification*)notification {
-	(void) notification;
-	qs::cocoa::reapplyPanels();
+/// Run without a dock icon or application menu bar.
+void setAccessoryActivationPolicy() {
+	[NSApplication.sharedApplication setActivationPolicy:NSApplicationActivationPolicyAccessory];
 }
 
-- (void)becameActive:(NSNotification*)notification {
-	(void) notification;
-	qs::cocoa::releaseStartupActivation();
-	qs::cocoa::reapplyPanels();
-}
-@end
+/// Unbind cmd-Q from the Quit item Qt installs by default.
+///
+/// A shell is not an app you quit by reflex. Qt's cocoa plugin always builds an
+/// application menu whose Quit item is wired to cmd-Q, so a stray cmd-Q aimed at
+/// whatever happened to hold key status could tear the whole shell down. Quit
+/// stays available through the CLI and IPC.
+void stripQuitKeyEquivalent() {
+	// Qt builds its application menu lazily, so do this after the current turn
+	// of the run loop rather than racing it.
+	dispatch_async(dispatch_get_main_queue(), ^{
+	  auto* mainMenu = NSApplication.sharedApplication.mainMenu;
+	  if (mainMenu == nil || mainMenu.numberOfItems == 0) return;
 
-namespace qs::cocoa {
+	  // The application menu is always the first item's submenu.
+	  auto* appMenu = [mainMenu itemAtIndex:0].submenu;
+	  if (appMenu == nil) return;
+
+	  for (NSMenuItem* item in appMenu.itemArray) {
+		  if ([item.keyEquivalent isEqualToString:@"q"]) {
+			  item.keyEquivalent = @"";
+			  item.keyEquivalentModifierMask = 0;
+		  }
+	  }
+	});
+}
+
+} // namespace
 
 namespace {
 
+// Qt's cocoa plugin re-derives window level and collection behavior whenever
+// the application's active state changes, clobbering anything set here.
+// Re-apply on both transitions and on a display change. AppKit posts all
+// three on the main thread, so a nil queue runs the blocks right there, the
+// way a selector observer did. The tokens live as long as the process.
 void ensureObserver() {
-	static QsCocoaPanelObserver* observer = nil;
-	if (observer != nil) return;
-
-	observer = [[QsCocoaPanelObserver alloc] init];
+	static auto installed = false;
+	if (installed) return;
+	installed = true;
 
 	auto* center = NSNotificationCenter.defaultCenter;
+	auto reapply = ^(NSNotification*) { reapplyPanels(); };
 
-	[center addObserver:observer
-	           selector:@selector(becameActive:)
-	               name:NSApplicationDidBecomeActiveNotification
-	             object:nil];
-
-	[center addObserver:observer
-	           selector:@selector(reapply:)
-	               name:NSApplicationDidResignActiveNotification
-	             object:nil];
-
-	[center addObserver:observer
-	           selector:@selector(reapply:)
-	               name:NSApplicationDidChangeScreenParametersNotification
-	             object:nil];
+	[center addObserverForName:NSApplicationDidBecomeActiveNotification
+	                    object:nil
+	                     queue:nil
+	                usingBlock:^(NSNotification*) {
+	                  releaseStartupActivation();
+	                  reapplyPanels();
+	                }];
+	[center addObserverForName:NSApplicationDidResignActiveNotification object:nil queue:nil usingBlock:reapply];
+	[center addObserverForName:NSApplicationDidChangeScreenParametersNotification
+	                    object:nil
+	                     queue:nil
+	                usingBlock:reapply];
 }
 
 } // namespace
@@ -417,7 +432,6 @@ void registerPanel(WId view, PanelLayer layer, bool focusable) {
 	if (view == 0) return;
 
 	becomeShellProcess();
-	ensureObserver();
 
 	auto config = PanelConfig {.layer = layer, .focusable = focusable};
 
@@ -440,29 +454,19 @@ void setPanelInputEnabled(WId view, bool enabled) {
 	auto* window = windowFor(view);
 	if (window == nil) return;
 
-	auto ignores = captureInert() || !enabled;
+	auto ignores = captureInert || !enabled;
 	if (window.ignoresMouseEvents != ignores) window.ignoresMouseEvents = ignores;
 }
 
-namespace {
-bool& shellProcess() {
-	static auto shell = false;
-	return shell;
-}
-} // namespace
-
-// Sticky: a hidden panel releases its native window (see
-// CocoaPanelWindow::releaseHiddenGraphics), so the registry can be empty
-// between shows without the process having stopped being a shell.
-bool processOwnsPanels() { return shellProcess(); }
+bool processOwnsPanels() { return shellProcess; }
 
 void becomeShellProcess() {
 	// A process that owns panels is a shell: no Dock icon, no menu bar, never
 	// the active application. A process that owns none is an ordinary window
 	// (settings, the welcome screen) and must stay a regular app, or the user
 	// has no menu bar to quit it from and their cmd-Q lands on the shell.
-	if (shellProcess()) return;
-	shellProcess() = true;
+	if (shellProcess) return;
+	shellProcess = true;
 
 	setAccessoryActivationPolicy();
 	stripQuitKeyEquivalent();
@@ -562,11 +566,11 @@ void focusPanel(WId view) {
 	// actually came from.
 	auto* frontmost = NSWorkspace.sharedWorkspace.frontmostApplication;
 	auto foreign = frontmost != nil && frontmost.processIdentifier != getpid();
-	if (foreign && previousFrontmostPid() == 0) {
-		previousFrontmostPid() = frontmost.processIdentifier;
+	if (foreign && previousFrontmostPid == 0) {
+		previousFrontmostPid = frontmost.processIdentifier;
 	}
 
-	activationRequested() = true;
+	activationRequested = true;
 
 	if (foreign || !NSApp.isActive) {
 		// macOS 14 cooperative activation first: -activate is granted when the
@@ -590,12 +594,12 @@ void focusPanel(WId view) {
 		    dispatch_time(DISPATCH_TIME_NOW, ACTIVATION_GRACE_NS),
 		    dispatch_get_main_queue(),
 		    ^{
-		      if (NSApp.isActive || !activationRequested()) return;
+		      if (NSApp.isActive || !activationRequested) return;
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
 		      [NSApp activateIgnoringOtherApps:YES];
 #pragma clang diagnostic pop
-		      logActivation("taken (fallback)", previousFrontmostPid(), window);
+		      logActivation("taken (fallback)", previousFrontmostPid, window);
 		    }
 		);
 	}
@@ -603,15 +607,15 @@ void focusPanel(WId view) {
 	// Takes effect when the activation lands: an inactive application's key
 	// window is restored as it becomes active.
 	[window makeKeyWindow];
-	logActivation("taken", previousFrontmostPid(), window);
+	logActivation("taken", previousFrontmostPid, window);
 }
 
 void unfocusPanel() {
-	activationRequested() = false;
+	activationRequested = false;
 
-	auto pid = previousFrontmostPid();
+	auto pid = previousFrontmostPid;
 	if (pid == 0) return;
-	previousFrontmostPid() = 0;
+	previousFrontmostPid = 0;
 
 	// Nothing to give back if the user has already gone elsewhere: a click in
 	// another application activated it and deactivated the shell before the
@@ -627,45 +631,58 @@ void unfocusPanel() {
 
 void unregisterPanel(WId view) { panelConfigs().remove(view); }
 
+bool feedPointer(QWindow* window, QPoint raw, bool& inside, QPoint& last, const QRegion* mask) {
+	auto pointer = raw;
+	if (auto* screen = window->screen()) {
+		auto rect = screen->geometry();
+		if (rect.adjusted(-1, -1, 1, 1).contains(pointer)) {
+			pointer.setX(qBound(rect.left(), pointer.x(), rect.right()));
+			pointer.setY(qBound(rect.top(), pointer.y(), rect.bottom()));
+		}
+	}
+
+	auto geometry = window->geometry();
+	auto local = pointer - geometry.topLeft();
+	auto hit = geometry.contains(pointer) && (mask == nullptr || mask->contains(local));
+	auto left = inside && !hit;
+	inside = hit;
+
+	if (left) {
+		// Forget where the pointer was, or coming back to the exact pixel it left
+		// from matches the unchanged-position check and posts no move -- leaving
+		// Qt with a Leave and nothing to undo it.
+		last = QPoint(-1, -1);
+		QCoreApplication::postEvent(window, new QEvent(QEvent::Leave));
+		return false;
+	}
+
+	// Real moves, when they do arrive, carry the same coordinates, so the two
+	// paths agree rather than fighting.
+	if (!hit || pointer == last) return hit;
+	last = pointer;
+
+	QCoreApplication::postEvent(
+	    window,
+	    new QMouseEvent(
+	        QEvent::MouseMove,
+	        QPointF(local),
+	        QPointF(pointer),
+	        Qt::NoButton,
+	        Qt::NoButton,
+	        Qt::NoModifier
+	    )
+	);
+
+	return true;
+}
+
 bool anyMouseButtonHeld() {
 	// System-wide button state, whichever application the press went to.
 	return NSEvent.pressedMouseButtons != 0;
 }
 
-void setAccessoryActivationPolicy() {
-	[NSApplication.sharedApplication setActivationPolicy:NSApplicationActivationPolicyAccessory];
-}
-
 void setRegularActivationPolicy() {
 	[NSApplication.sharedApplication setActivationPolicy:NSApplicationActivationPolicyRegular];
-}
-
-void stripQuitKeyEquivalent() {
-	// Qt builds its application menu lazily, so do this after the current turn
-	// of the run loop rather than racing it.
-	dispatch_async(dispatch_get_main_queue(), ^{
-	  auto* mainMenu = NSApplication.sharedApplication.mainMenu;
-	  if (mainMenu == nil || mainMenu.numberOfItems == 0) return;
-
-	  // The application menu is always the first item's submenu.
-	  auto* appMenu = [mainMenu itemAtIndex:0].submenu;
-	  if (appMenu == nil) return;
-
-	  for (NSMenuItem* item in appMenu.itemArray) {
-		  if ([item.keyEquivalent isEqualToString:@"q"]) {
-			  item.keyEquivalent = @"";
-			  item.keyEquivalentModifierMask = 0;
-		  }
-	  }
-	});
-}
-
-qreal screenTopSafeAreaInset(WId view) {
-	auto* window = windowFor(view);
-	auto* screen = window != nil ? window.screen : NSScreen.mainScreen;
-	if (screen == nil) return 0;
-
-	return screen.safeAreaInsets.top;
 }
 
 
@@ -754,9 +771,9 @@ bool anyInteractiveCapture() {
 
 bool syncCaptureInertness() {
 	auto capturing = interactiveScreenCaptureActive();
-	if (capturing == captureInert()) return capturing;
+	if (capturing == captureInert) return capturing;
 
-	captureInert() = capturing;
+	captureInert = capturing;
 	reapplyPanels();
 
 	return capturing;

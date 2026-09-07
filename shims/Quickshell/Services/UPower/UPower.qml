@@ -45,7 +45,7 @@ Singleton {
     // consumer ever sees a battery that claims to be present at 0%.
     component NativeBattery: UPowerDevice {
         model: "Internal Battery"
-        ready: Cocoa.Power.ready
+        ready: true
         isPresent: Cocoa.Power.isPresent
         percentage: Cocoa.Power.percentage
         state: Cocoa.Power.state

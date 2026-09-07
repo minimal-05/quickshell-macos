@@ -26,7 +26,6 @@ qt_add_qml_module(quickshell-cocoa-wayland
 		qml/WlSessionLock.qml
 		qml/WlSessionLockSurface.qml
 		qml/ShortcutInhibitor.qml
-		qml/ShortcutsInhibitor.qml
 )
 
 install_qml_module(quickshell-cocoa-wayland)

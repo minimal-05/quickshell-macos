@@ -54,7 +54,7 @@ n="$(qs_labels | count)"
 # nothing runs on a timer.
 q0="$(ipc queries)"
 t0="$(/usr/bin/python3 -c 'import time; print(time.time())')"
-spawns="$("$ROOT/bin/qs-spawns" "$pid" "$IDLE")"
+spawns="$("$ROOT/bin/qs-perf" --children "$pid" "$IDLE")"
 yabai_n="$(printf '%s\n' "$spawns" | awk '$2 == "yabai" {print $1}')"
 [ -z "$yabai_n" ] && yabai_n=0
 q1="$(ipc queries)"

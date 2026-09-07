@@ -8,20 +8,12 @@
 
 namespace qs::cocoa {
 
-namespace {
-
-PanelLayer toPanelLayer(WlrLayer::Enum layer) {
-	switch (layer) {
-	case WlrLayer::Background: return PanelLayer::Desktop;
-	case WlrLayer::Bottom: return PanelLayer::Bottom;
-	case WlrLayer::Top: return PanelLayer::Top;
-	case WlrLayer::Overlay: return PanelLayer::Overlay;
-	}
-
-	return PanelLayer::Top;
-}
-
-} // namespace
+// WlrLayer and PanelLayer document the same 0..3 numbering, so the layer is a
+// cast; these pin the four values in case either enum is ever reordered.
+static_assert(static_cast<quint8>(WlrLayer::Background) == static_cast<quint8>(PanelLayer::Desktop));
+static_assert(static_cast<quint8>(WlrLayer::Bottom) == static_cast<quint8>(PanelLayer::Bottom));
+static_assert(static_cast<quint8>(WlrLayer::Top) == static_cast<quint8>(PanelLayer::Top));
+static_assert(static_cast<quint8>(WlrLayer::Overlay) == static_cast<quint8>(PanelLayer::Overlay));
 
 CocoaLayershell::CocoaLayershell(CocoaPanelWindow* panel, QObject* parent)
     : QObject(parent)
@@ -40,7 +32,7 @@ void CocoaLayershell::setLayer(WlrLayer::Enum layer) {
 	this->mLayer = layer;
 
 	if (this->mPanel) {
-		this->mPanel->setLayerOverride(toPanelLayer(layer));
+		this->mPanel->setLayerOverride(static_cast<PanelLayer>(layer));
 	}
 
 	emit this->layerChanged();

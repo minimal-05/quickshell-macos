@@ -13,10 +13,8 @@
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export QS_BINARY="${QS_BINARY:-$ROOT/bin/qs}"
-export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp/quickshell-$UID}"
 PROBE="$ROOT/tests/_probe_notifications.qml"
 export QS_SHELL_CONFIG="$PROBE"
-export QML2_IMPORT_PATH="$ROOT/shims${QML2_IMPORT_PATH:+:$QML2_IMPORT_PATH}"
 NS="$ROOT/bin/notify-send"
 
 PID="$("$ROOT/bin/qs-test" "$PROBE" --shell)" || { echo "FAIL: probe did not start"; exit 1; }

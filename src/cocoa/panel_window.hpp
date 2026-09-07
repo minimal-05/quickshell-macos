@@ -87,19 +87,6 @@ private:
 	QTimer mPublishTimer;
 };
 
-class CocoaPanelEventFilter: public QObject {
-	Q_OBJECT;
-
-public:
-	explicit CocoaPanelEventFilter(QObject* parent = nullptr): QObject(parent) {}
-
-signals:
-	void surfaceCreated();
-
-protected:
-	bool eventFilter(QObject* watched, QEvent* event) override;
-};
-
 class CocoaPanelWindow: public ProxyWindowBase {
 	QSDOC_BASECLASS(PanelWindowInterface);
 	Q_OBJECT;
@@ -177,6 +164,8 @@ signals:
 
 protected:
 	void onPolished() override;
+	/// Installed on the backing window: a new native surface re-runs cocoaInit.
+	bool eventFilter(QObject* watched, QEvent* event) override;
 
 private slots:
 	void cocoaInit();
@@ -187,10 +176,8 @@ private:
 	void updateScreen();
 	void updateNativeState();
 	void updateDimensions(bool propagate = true);
-	void updateDimensionsCb() { this->updateDimensions(); }
 	void updateFocusable();
 
-	[[nodiscard]] PanelAnimation openCloseAnimation() const;
 	void finishOpenCloseAnimation();
 
 	/// Release the native window behind a panel that has stayed hidden.
@@ -220,7 +207,6 @@ private:
 
 	QPointer<QScreen> mTrackedScreen = nullptr;
 	WId mRegisteredView = 0;
-	CocoaPanelEventFilter eventFilter;
 
 	// A closing panel stays mapped until its animation has played out; the timer
 	// is what finally hides it. Geometry updates are NOT held off meanwhile --
@@ -263,9 +249,9 @@ private:
 	Q_OBJECT_BINDABLE_PROPERTY(CocoaPanelWindow, Qt::Edge, bcExclusionEdge);
 
 	QS_BINDING_SUBSCRIBE_METHOD(CocoaPanelWindow, bAboveWindows, updateNativeState, onValueChanged);
-	QS_BINDING_SUBSCRIBE_METHOD(CocoaPanelWindow, bAnchors, updateDimensionsCb, onValueChanged);
-	QS_BINDING_SUBSCRIBE_METHOD(CocoaPanelWindow, bMargins, updateDimensionsCb, onValueChanged);
-	QS_BINDING_SUBSCRIBE_METHOD(CocoaPanelWindow, bcExclusiveZone, updateDimensionsCb, onValueChanged);
+	QS_BINDING_SUBSCRIBE_METHOD(CocoaPanelWindow, bAnchors, updateDimensionsSlot, onValueChanged);
+	QS_BINDING_SUBSCRIBE_METHOD(CocoaPanelWindow, bMargins, updateDimensionsSlot, onValueChanged);
+	QS_BINDING_SUBSCRIBE_METHOD(CocoaPanelWindow, bcExclusiveZone, updateDimensionsSlot, onValueChanged);
 	QS_BINDING_SUBSCRIBE_METHOD(CocoaPanelWindow, bFocusable, updateFocusable, onValueChanged);
 	// clang-format on
 

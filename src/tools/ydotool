@@ -2,7 +2,6 @@
 """ydotool(1) stand-in for the macOS port: CGEvent keyboard synthesis.
 
   ydotool key [--key-delay ms] [-d ms] <evdev-code>:<1|0> ...
-  ydotool type [--key-delay ms] [-d ms] <text> ...
   ydotool [--dry-run] ...        print the events instead of posting them
   ydotool --help
 
@@ -62,7 +61,6 @@ def load_cg():
     cg.CGEventCreateKeyboardEvent.argtypes = [ctypes.c_void_p, ctypes.c_uint16, ctypes.c_bool]
     cg.CGEventCreateKeyboardEvent.restype = ctypes.c_void_p
     cg.CGEventSetFlags.argtypes = [ctypes.c_void_p, ctypes.c_uint64]
-    cg.CGEventKeyboardSetUnicodeString.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.c_void_p]
     cg.CGEventPost.argtypes = [ctypes.c_uint32, ctypes.c_void_p]
     cg.CFRelease.argtypes = [ctypes.c_void_p]
 
@@ -82,14 +80,11 @@ def save_mods(flags):
         pass
 
 
-def post(vk, down, flags, text=None, dry=False):
+def post(vk, down, flags, dry=False):
     if dry:
-        print(f"{'down' if down else 'up'} vk={vk} flags={flags:#x}" + (f" text={text!r}" if text else ""))
+        print(f"{'down' if down else 'up'} vk={vk} flags={flags:#x}")
         return
     ev = cg.CGEventCreateKeyboardEvent(None, vk, down)
-    if text is not None:
-        buf = text.encode("utf-16-le")
-        cg.CGEventKeyboardSetUnicodeString(ev, len(buf) // 2, buf)
     cg.CGEventSetFlags(ev, flags)
     cg.CGEventPost(0, ev)  # kCGHIDEventTap
     cg.CFRelease(ev)
@@ -113,16 +108,6 @@ def do_key(codes, delay, dry):
         if delay:
             time.sleep(delay / 1000)
     save_mods(flags)
-    return 0
-
-
-def do_type(text, delay, dry):
-    flags = load_mods()
-    for ch in text:
-        post(0, True, flags, text=ch, dry=dry)
-        post(0, False, flags, text=ch, dry=dry)
-        if delay:
-            time.sleep(delay / 1000)
     return 0
 
 
@@ -151,9 +136,7 @@ def main(argv):
     verb, args = rest[0], rest[1:]
     if verb == "key":
         return do_key(args, delay, dry)
-    if verb == "type":
-        return do_type(" ".join(args), delay, dry)
-    sys.stderr.write(f"ydotool: '{verb}' is not supported on macOS (only key and type)\n")
+    sys.stderr.write(f"ydotool: '{verb}' is not supported on macOS (only key)\n")
     return 1
 
 

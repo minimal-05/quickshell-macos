@@ -32,7 +32,7 @@
 //   otherwise fight the write and loop.
 
 import QtQuick
-import Quickshell.Io
+import Quickshell
 
 QtObject {
     id: root
@@ -54,21 +54,16 @@ QtObject {
     function activate(): void {
         if (root.wid < 0)
             return;
-        dispatch.exec(["yabai", "-m", "window", "--focus", String(root.wid)]);
+        Quickshell.execDetached(["yabai", "-m", "window", "--focus", String(root.wid)]);
     }
 
     function close(): void {
         if (root.wid < 0)
             return;
-        dispatch.exec(["yabai", "-m", "window", String(root.wid), "--close"]);
+        Quickshell.execDetached(["yabai", "-m", "window", String(root.wid), "--close"]);
     }
 
     function fullscreenOn(screen): void {}
     function setRectangle(window, rect): void {}
     function unsetRectangle(): void {}
-
-    // QtObject has no default property, so the Process lives on a named one.
-    readonly property Process _dispatch: Process {
-        id: dispatch
-    }
 }

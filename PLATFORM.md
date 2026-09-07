@@ -22,6 +22,11 @@ No flags. Every Linux-only subsystem (Wayland, X11, the D-Bus services,
 Bluetooth, NetworkManager, jemalloc, the crash handler) now defaults **off on
 Apple** and `COCOA` defaults on, so a first configure on a Mac just works.
 
+C++ follows upstream's conventions (`.clang-format` and `.clang-tidy` in the
+repo root; lowercase `<qwindow.h>`-style Qt headers, `auto` where the type is
+deducible, one `Q_PROPERTY` per line). `-DDISTRIBUTOR` names this fork in
+`qs --version`; `qs-build` passes it.
+
 > **Copying the binary breaks it.** A `cp` of a Mach-O file invalidates its
 > signature and the kernel then kills it on exec with *no output at all* —
 > it looks like the binary silently does nothing. Always
@@ -131,9 +136,16 @@ Take `src/cocoa/wayland/` as the worked example.
 
 `Quickshell` core · `Quickshell.Io` · `Quickshell.Widgets` · `PanelWindow`,
 `FloatingWindow`, `PopupWindow` · `Quickshell.Wayland` (`WlrLayershell` attached
-type driving NSWindow level; `ToplevelManager`/`Toplevel` over yabai) ·
-`Quickshell.Cocoa.Hotkeys` behind the `GlobalShortcut` shim (Carbon
-`RegisterEventHotKey`; chord table `src/cocoa/shortcuts.json` overlaid by
+type driving NSWindow level; `ToplevelManager`/`Toplevel` over yabai;
+`ScreencopyView` on ScreenCaptureKit; `IdleMonitor` over
+`SystemStats.idleSeconds()`) · `Quickshell.Services.Pam` (OpenPAM, in-process) ·
+`Quickshell.Cocoa`: `Power` (IOKit power sources; the `Services.UPower` shim
+answers on top of it), `CoreAudio` (HAL property listeners; the
+`Services.Pipewire` shim's default sink/source, volume and mute ride on it),
+`SystemStats` (Mach host statistics for end-4's `ResourceUsage`),
+`Reservation` (exclusive zones summed into yabai's `external_bar`),
+`Hotkeys` behind the `GlobalShortcut` shim (Carbon `RegisterEventHotKey`;
+chord table `src/cocoa/shortcuts.json` overlaid by
 `~/.config/quickshell-macos/shortcuts.json`, any chord skhdrc binds is left to
 skhd; a bare-modifier hold like end-4's SUPER for `workspaceNumber` is not a
 hot key and stays IPC-only until a CGEvent tap under Input Monitoring exists) ·
@@ -141,18 +153,20 @@ pasteboard watch (`src/cocoa/clipboard.mm`: `Quickshell.clipboardTextChanged`
 fires for copies made in other apps, which Qt alone only notices on app
 activation, and every copy lands in the history `bin/cliphist` serves from
 `~/Library/Application Support/quickshell/cliphist`; `bin/wl-copy`/`bin/wl-paste`
-wrap `pbcopy`/`pbpaste`)
+are `pbcopy`/`pbpaste`) · notifications: `bin/qs-notify-bridge` replays
+Notification Center's store into the `Services.Notifications` shim, and
+`bin/notify-send` speaks the v2 wire protocol into the same server
 
-**Shims (loose QML — should migrate into the binary)**
+**Shims (loose QML, over a native singleton or a tool)**
 
 `Quickshell.Hyprland` (yabai) · `Services.Mpris` (media-control) ·
-`Services.UPower` (pmset) · `Services.Pipewire` (default sink only) ·
-`Quickshell.Bluetooth` · `org.kde.kirigami` (`Icon` only)
+`Services.UPower` (over `Cocoa.Power`) · `Services.Pipewire` (over
+`Cocoa.CoreAudio`) · `Services.Notifications` (fed as above) ·
+`Quickshell.Bluetooth` (blueutil) · `org.kde.kirigami` (`Icon` only)
 
 **Inert but present, so configs load**
 
-`Services.SystemTray` · `Services.Notifications` · `Services.Polkit` ·
-`Services.Pam` · `org.kde.syntaxhighlighting`
+`Services.SystemTray` · `Services.Polkit` · `org.kde.syntaxhighlighting`
 
 **Not possible on macOS — document, don't shim**
 
@@ -160,25 +174,6 @@ Hosting other apps' menu-bar items · acting as the notification server ·
 observing now-playing through public API · per-app volume control (needs a HAL
 plugin) · a *secure* session lock · Spaces enumeration without private CGS ·
 greetd · polkit
-
-## Roadmap, by value over effort
-
-**Small.** `IdleMonitor` via `CGEventSourceSecondsSinceLastEventType`
-and `IdleInhibitor` via `IOPMAssertionCreateWithName` (both currently fork a
-subprocess every second) · `UPower` via `IOPSCopyPowerSourcesInfo` +
-`IOPSNotificationCreateRunLoopSource` · `Pipewire` default device via CoreAudio
-property listeners.
-
-**Medium.** `ScreencopyView` via ScreenCaptureKit (`SCStream` → `IOSurface` →
-`QSGTexture`) · `Networking` via SystemConfiguration + CoreWLAN, with
-`CLLocationManager` authorization to fix the redacted SSID · `ToplevelManager`
-via `CGWindowListCopyWindowInfo` + `AXUIElement`, which would drop the yabai
-dependency · `Bluetooth` via IOBluetooth.
-
-**Blocked on a bundle.** Running as a bare Mach-O binary gives no bundle
-identifier. That blocks `UNUserNotificationCenter` outright and keys Screen
-Recording / Accessibility grants to the binary path, so every rebuild loses them.
-A `.app` target should land before any permission-gated feature.
 
 ## Upstreamable
 
@@ -213,9 +208,16 @@ cross-platform Quickshell.
 - Hot keys and skhd must not share a chord: skhd's event tap swallows the key
   before the hot key sees it, and a stale `qs-ipc ... toggle` line would fire an
   action a second time. `Hotkeys` therefore skips any chord skhdrc binds (logged
-  at startup), and `qs-install-keybinds` leaves skhd only the settings window.
-  Both files are read once per shell start. Synthetic key events reach hot keys
+  at startup); skhd keeps only what is not a `GlobalShortcut`, such as opening
+  the settings window. Both files are read once per shell start. Synthetic key events reach hot keys
   for letter keys, not for F17-F19 (`tests/hotkeys.sh` relies on that).
+- Shortcuts are seeded by `cp src/cocoa/shortcuts.json ~/.config/quickshell-macos/`;
+  delete the copy to go back to the compiled-in table.
+- macOS draws its own banner for anything the notification bridge also shows.
+  The per-source alert style lives in `~/Library/Preferences/com.apple.ncprefs`
+  (`apps[].flags` bits 3-4: 0 none, 1 banners, 2 alerts); edit it through
+  `defaults export/import com.apple.ncprefs` and `killall usernoted`, and the
+  bridge still sees the notification.
 
 ## TCC identity
 
@@ -300,8 +302,7 @@ security find-identity -v -p codesigning        # now lists "Quickshell Dev"
 System Settings → **Privacy & Security**. In each list press **+** (or drag
 `Quickshell.app` from the repo root into the list) and enable the toggle:
 
-- **Screen Recording** — window thumbnails (`qs-window-thumbs`), the
-  screenshot / region tools, `ScreencopyView`.
+- **Screen Recording** — the screenshot / region tools, `ScreencopyView`.
 - **Accessibility** — event taps, focus grabs, window management helpers.
 - **Full Disk Access** — the notification bridge reads Notification Center's
   database.

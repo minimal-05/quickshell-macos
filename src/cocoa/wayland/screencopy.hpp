@@ -109,7 +109,8 @@ protected:
 
 private slots:
 	void onSourceDestroyed();
-	void onWindowVisibleChanged();
+	/// Pause the live stream while it cannot be seen, resume it when it can.
+	void syncLiveStream();
 
 private:
 	struct Impl;

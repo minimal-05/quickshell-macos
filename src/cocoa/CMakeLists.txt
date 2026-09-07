@@ -24,13 +24,15 @@ install_qml_module(quickshell-cocoa)
 
 add_library(quickshell-cocoa-init OBJECT init.cpp)
 
-# QuartzCore for CAMediaTimingFunction, used by the panel open/close animations.
-target_link_libraries(quickshell-cocoa PRIVATE Qt::Quick "-framework AppKit" "-framework QuartzCore")
-# CoreAudio for the device HAL, AudioToolbox for the virtual main volume selector. round2/native-audio
-target_link_libraries(quickshell-cocoa PRIVATE "-framework CoreAudio" "-framework AudioToolbox") # round2/native-audio
-# CoreLocation for the Location Services authorization request (locationauth.mm)
-# that backs the weather widget and real (non-redacted) Wi-Fi SSIDs.
-target_link_libraries(quickshell-cocoa PRIVATE "-framework CoreLocation")
+# QuartzCore: CAMediaTimingFunction for the panel open/close animations.
+# CoreAudio and AudioToolbox: the device HAL and the virtual main volume
+# selector (coreaudio.mm). CoreLocation: the Location Services request behind
+# the weather widget and real Wi-Fi SSIDs (locationauth.mm). IOKit: the power
+# sources and the AppleSmartBattery registry node (power.mm). CoreGraphics:
+# the idle timer (sysstats.mm). Carbon: RegisterEventHotKey (hotkeys.mm).
+target_link_libraries(quickshell-cocoa PRIVATE Qt::Quick
+	"-framework AppKit" "-framework QuartzCore" "-framework CoreAudio" "-framework AudioToolbox"
+	"-framework CoreLocation" "-framework IOKit" "-framework CoreGraphics" "-framework Carbon")
 target_link_libraries(quickshell-cocoa-init PRIVATE Qt::Quick Qt::Qml "-framework AppKit")
 
 target_link_libraries(quickshell PRIVATE quickshell-cocoaplugin quickshell-cocoa-init)
@@ -38,14 +40,10 @@ target_link_libraries(quickshell PRIVATE quickshell-cocoaplugin quickshell-cocoa
 # Quickshell.Wayland compatibility module (WlrLayershell attached type + friends).
 add_subdirectory(wayland)
 
-# IOKit for the power sources and the AppleSmartBattery registry node (power.mm).
-target_link_libraries(quickshell-cocoa PRIVATE "-framework IOKit") # round2/native-stats-power
-# round2/native-input: GlobalShortcut chords via Carbon RegisterEventHotKey, and
-# the default chord table compiled in from shortcuts.json so a fresh checkout
-# has working hotkeys before qs-install-keybinds copies that file to ~/.config.
+# The default GlobalShortcut chord table, compiled in from shortcuts.json so a fresh checkout
+# has working hotkeys before a copy of that file lands in ~/.config/quickshell-macos.
 file(READ "${CMAKE_CURRENT_SOURCE_DIR}/shortcuts.json" QS_COCOA_SHORTCUTS_JSON)
 file(CONFIGURE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/shortcuts_json.hpp"
 	CONTENT "static const char* const DEFAULT_SHORTCUTS_JSON = R\"qsjson(@QS_COCOA_SHORTCUTS_JSON@)qsjson\";\n")
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS shortcuts.json)
 target_include_directories(quickshell-cocoa PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
-target_link_libraries(quickshell-cocoa PRIVATE "-framework Carbon")

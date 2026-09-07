@@ -13,7 +13,7 @@ ShellRoot {
 
     Component.onCompleted: {
         const s = Cocoa.SystemStats;
-        first = { total: s.cpuTotal, idle: s.cpuIdle, user: s.cpuUser, system: s.cpuSystem, nice: s.cpuNice };
+        first = { total: s.cpuTotal, idle: s.cpuIdle };
         s.interval = 1000;
     }
 
@@ -30,35 +30,22 @@ ShellRoot {
             const fails = [];
             if (samples < 1) fails.push("no timer sample yet");
             if (!(s.cpuTotal > first.total)) fails.push(`cpuTotal ${first.total} -> ${s.cpuTotal} not increasing`);
-            for (const k of ["idle", "user", "system", "nice"]) {
-                const now = s["cpu" + k[0].toUpperCase() + k.slice(1)];
-                if (now < first[k]) fails.push(`cpu${k} went backwards ${first[k]} -> ${now}`);
-            }
+            if (s.cpuIdle < first.idle) fails.push(`cpuIdle went backwards ${first.idle} -> ${s.cpuIdle}`);
             if (!(s.memTotal > 0)) fails.push("memTotal 0");
             if (s.memUsed + s.memAvailable !== s.memTotal) fails.push("used + available != total");
             if (!(s.memUsed > 0 && s.memUsed < s.memTotal)) fails.push(`memUsed ${s.memUsed}`);
-            if (!(s.memActive + s.memWired + s.memCompressed === s.memUsed)) fails.push("used != active+wired+compressed");
-            if (!(s.pageSize === 4096 || s.pageSize === 16384)) fails.push(`pageSize ${s.pageSize}`);
-            if (!(s.swapFree <= s.swapTotal && s.swapUsed <= s.swapTotal)) fails.push(`swap ${s.swapUsed}/${s.swapFree}/${s.swapTotal}`);
-            if (s.loadAverage.length !== 3 || !(s.loadAverage[0] >= 0)) fails.push(`loadAverage ${JSON.stringify(s.loadAverage)}`);
+            if (!(s.swapFree <= s.swapTotal)) fails.push(`swap ${s.swapFree}/${s.swapTotal}`);
+            if (!(s.idleSeconds() >= 0 && s.idleSeconds() < 86400 * 365)) fails.push(`idleSeconds ${s.idleSeconds()}`);
             if (s.interval !== 1000) fails.push(`interval ${s.interval}`);
             return fails.length ? "fail: " + fails.join(", ") : "ok";
         }
 
         function memTotal(): string { return String(Cocoa.SystemStats.memTotal); }
 
-        // sample() outside the timer must also advance the counters.
-        function manual(): string {
-            const s = Cocoa.SystemStats;
-            const before = samples;
-            s.sample();
-            return samples === before + 1 ? "ok" : "sampled not emitted";
-        }
-
         function dump(): string {
             const s = Cocoa.SystemStats;
             const out = {};
-            for (const k of ["interval", "cpuUser", "cpuSystem", "cpuIdle", "cpuNice", "cpuTotal", "memTotal", "memUsed", "memAvailable", "memFree", "memWired", "memCompressed", "pageSize", "swapTotal", "swapUsed", "swapFree", "loadAverage"])
+            for (const k of ["interval", "cpuIdle", "cpuTotal", "memTotal", "memUsed", "memAvailable", "swapTotal", "swapFree"])
                 out[k] = s[k];
             out.samples = samples;
             return JSON.stringify(out);
