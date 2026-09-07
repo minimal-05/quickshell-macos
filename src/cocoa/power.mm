@@ -20,11 +20,16 @@ namespace qs::cocoa {
 
 namespace {
 
-std::optional<double> numberAt(CFDictionaryRef dict, const char* key) {
-	if (dict == nullptr) return std::nullopt;
+CFTypeRef valueAt(CFDictionaryRef dict, const char* key) {
+	if (dict == nullptr) return nullptr;
 	auto* cfKey = CFStringCreateWithCString(kCFAllocatorDefault, key, kCFStringEncodingUTF8);
 	auto value = CFDictionaryGetValue(dict, cfKey);
 	CFRelease(cfKey);
+	return value;
+}
+
+std::optional<double> numberAt(CFDictionaryRef dict, const char* key) {
+	auto value = valueAt(dict, key);
 	if (value == nullptr) return std::nullopt;
 
 	// The gas gauge publishes signed counters (Amperage while discharging) as
@@ -61,19 +66,13 @@ std::optional<bool> boolAt(CFDictionaryRef dict, const char* key) {
 }
 
 QString stringAt(CFDictionaryRef dict, const char* key) {
-	if (dict == nullptr) return {};
-	auto* cfKey = CFStringCreateWithCString(kCFAllocatorDefault, key, kCFStringEncodingUTF8);
-	auto value = CFDictionaryGetValue(dict, cfKey);
-	CFRelease(cfKey);
+	auto value = valueAt(dict, key);
 	if (value == nullptr || CFGetTypeID(value) != CFStringGetTypeID()) return {};
 	return QString::fromCFString(static_cast<CFStringRef>(value));
 }
 
 CFDictionaryRef dictAt(CFDictionaryRef dict, const char* key) {
-	if (dict == nullptr) return nullptr;
-	auto* cfKey = CFStringCreateWithCString(kCFAllocatorDefault, key, kCFStringEncodingUTF8);
-	auto value = CFDictionaryGetValue(dict, cfKey);
-	CFRelease(cfKey);
+	auto value = valueAt(dict, key);
 	if (value == nullptr || CFGetTypeID(value) != CFDictionaryGetTypeID()) return nullptr;
 	return static_cast<CFDictionaryRef>(value);
 }

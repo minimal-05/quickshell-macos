@@ -176,7 +176,6 @@ private:
 	void updateScreen();
 	void updateNativeState();
 	void updateDimensions(bool propagate = true);
-	void updateDimensionsCb() { this->updateDimensions(); }
 	void updateFocusable();
 
 	void finishOpenCloseAnimation();
@@ -250,9 +249,9 @@ private:
 	Q_OBJECT_BINDABLE_PROPERTY(CocoaPanelWindow, Qt::Edge, bcExclusionEdge);
 
 	QS_BINDING_SUBSCRIBE_METHOD(CocoaPanelWindow, bAboveWindows, updateNativeState, onValueChanged);
-	QS_BINDING_SUBSCRIBE_METHOD(CocoaPanelWindow, bAnchors, updateDimensionsCb, onValueChanged);
-	QS_BINDING_SUBSCRIBE_METHOD(CocoaPanelWindow, bMargins, updateDimensionsCb, onValueChanged);
-	QS_BINDING_SUBSCRIBE_METHOD(CocoaPanelWindow, bcExclusiveZone, updateDimensionsCb, onValueChanged);
+	QS_BINDING_SUBSCRIBE_METHOD(CocoaPanelWindow, bAnchors, updateDimensionsSlot, onValueChanged);
+	QS_BINDING_SUBSCRIBE_METHOD(CocoaPanelWindow, bMargins, updateDimensionsSlot, onValueChanged);
+	QS_BINDING_SUBSCRIBE_METHOD(CocoaPanelWindow, bcExclusiveZone, updateDimensionsSlot, onValueChanged);
 	QS_BINDING_SUBSCRIBE_METHOD(CocoaPanelWindow, bFocusable, updateFocusable, onValueChanged);
 	// clang-format on
 
