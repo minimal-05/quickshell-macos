@@ -1,5 +1,8 @@
 #pragma once
 
+#include <CoreGraphics/CGImage.h>
+
+#include <qimage.h>
 #include <qpixmap.h>
 #include <qsize.h>
 #include <qstring.h>
@@ -18,5 +21,9 @@ namespace qs::cocoa {
 /// icon. Returns a null pixmap when nothing matches, so the caller can carry on
 /// to its own fallback.
 QPixmap appIcon(const QString& name, const QSize& size);
+
+/// Copy a CGImage into a premultiplied ARGB32 QImage through a bitmap context.
+/// Shared by the icon lookup above and ScreencopyView's still captures.
+QImage imageFromCGImage(CGImageRef image);
 
 } // namespace qs::cocoa

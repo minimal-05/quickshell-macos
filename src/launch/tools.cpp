@@ -22,10 +22,10 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <string>
 #include <vector>
 
-#include <dirent.h>
 #include <mach-o/dyld.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -34,25 +34,16 @@ namespace qs::launch::macos {
 
 namespace {
 
+namespace fs = std::filesystem;
+
 // Configs are directories under ~/.config/quickshell; this is the one a bare
 // `qs` (and every `qs ipc call` that must find the same instance) runs. The
 // only place the name is written down.
 constexpr const char* DEFAULT_CONFIG = "end4";
 
-std::string dirName(const std::string& path) {
-	auto i = path.rfind('/');
-	if (i == std::string::npos) return ".";
-	return i == 0 ? "/" : path.substr(0, i);
-}
-
-std::string baseName(const std::string& path) {
-	auto i = path.rfind('/');
-	return i == std::string::npos ? path : path.substr(i + 1);
-}
-
-bool isExecutableFile(const std::string& path) {
-	struct stat st {};
-	return stat(path.c_str(), &st) == 0 && S_ISREG(st.st_mode) && access(path.c_str(), X_OK) == 0;
+bool isExecutableFile(const fs::path& path) {
+	std::error_code ec;
+	return fs::is_regular_file(path, ec) && access(path.c_str(), X_OK) == 0;
 }
 
 struct Layout {
@@ -75,11 +66,11 @@ Layout locate() {
 	char real[PATH_MAX];
 	if (realpath(exe, real) == nullptr) return {};
 
-	auto macosDir = dirName(real);
-	auto contents = dirName(macosDir);
-	if (baseName(macosDir) != "MacOS" || baseName(contents) != "Contents") return {};
+	auto macosDir = fs::path(real).parent_path();
+	auto contents = macosDir.parent_path();
+	if (macosDir.filename() != "MacOS" || contents.filename() != "Contents") return {};
 
-	return {.tools = contents + "/Resources/tools", .root = dirName(dirName(contents))};
+	return {.tools = contents / "Resources/tools", .root = contents.parent_path().parent_path()};
 }
 
 bool listHas(const char* var, const std::string& entry) {
@@ -123,9 +114,9 @@ bool namedConfigExists(const char* name) {
 	else return false;
 	base += "/quickshell";
 
-	struct stat st {};
-	if (stat((base + "/shell.qml").c_str(), &st) == 0 && S_ISREG(st.st_mode)) return false;
-	return stat((base + "/" + name + "/shell.qml").c_str(), &st) == 0 && S_ISREG(st.st_mode);
+	std::error_code ec;
+	if (fs::is_regular_file(base + "/shell.qml", ec)) return false;
+	return fs::is_regular_file(base + "/" + name + "/shell.qml", ec);
 }
 
 // quickshell's own subcommands win over a tool of the same name.
@@ -135,14 +126,12 @@ bool isBuiltin(const std::string& arg) {
 
 std::vector<std::string> listTools(const std::string& dir) {
 	std::vector<std::string> names;
-	if (auto* d = opendir(dir.c_str())) {
-		while (auto* entry = readdir(d)) {
-			std::string name = entry->d_name;
-			if (name[0] != '.' && isExecutableFile(dir + "/" + name)) names.push_back(name);
-		}
-		closedir(d);
+	std::error_code ec;
+	for (const auto& entry: fs::directory_iterator(dir, ec)) {
+		auto name = entry.path().filename().string();
+		if (name[0] != '.' && isExecutableFile(entry.path())) names.push_back(name);
 	}
-	std::sort(names.begin(), names.end());
+	std::ranges::sort(names);
 	return names;
 }
 
@@ -206,7 +195,7 @@ void dispatch(int argc, char** argv) {
 			exit(0);
 		}
 
-		auto self = baseName(argv[0]);
+		auto self = fs::path(argv[0]).filename().string();
 		if (self != "quickshell" && self != "qs" && isExecutableFile(layout.tools + "/" + self)) {
 			runTool(layout.tools + "/" + self, argv);
 		}

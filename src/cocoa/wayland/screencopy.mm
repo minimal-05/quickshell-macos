@@ -26,6 +26,7 @@
 #include <qsgtexture.h>
 
 #include "../../core/qmlscreen.hpp"
+#include "../appicon.hpp"
 
 namespace qs::cocoa {
 
@@ -191,36 +192,6 @@ SCStreamConfiguration* configurationFor(QSize output, bool cursor) {
 	// path: expose it, or derive it from the item's window refresh rate.
 	config.minimumFrameInterval = CMTimeMake(1, 30);
 	return config;
-}
-
-QImage imageFromCGImage(CGImageRef image) {
-	auto width = static_cast<int>(CGImageGetWidth(image));
-	auto height = static_cast<int>(CGImageGetHeight(image));
-	if (width <= 0 || height <= 0) return {};
-
-	QImage out(width, height, QImage::Format_ARGB32_Premultiplied);
-	out.fill(Qt::transparent);
-
-	auto* colorSpace = CGColorSpaceCreateDeviceRGB();
-	auto* context = CGBitmapContextCreate(
-	    out.bits(),
-	    static_cast<size_t>(width),
-	    static_cast<size_t>(height),
-	    8,
-	    static_cast<size_t>(out.bytesPerLine()),
-	    colorSpace,
-	    static_cast<uint32_t>(kCGImageAlphaPremultipliedFirst) | static_cast<uint32_t>(kCGBitmapByteOrder32Little)
-	);
-
-	if (context != nullptr) {
-		CGContextDrawImage(context, CGRectMake(0, 0, width, height), image);
-		CGContextRelease(context);
-	} else {
-		out = QImage();
-	}
-
-	CGColorSpaceRelease(colorSpace);
-	return out;
 }
 
 // ponytail: a CPU copy out of the IOSurface, then a texture upload in
