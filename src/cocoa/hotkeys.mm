@@ -235,13 +235,21 @@ Hotkeys::Hotkeys(QObject* parent): QObject(parent) {
 
 Hotkeys::~Hotkeys() {
 	instances().removeAll(this);
-	for (const auto& bound: this->mBound) {
-		for (auto id: bound.chords) release(id);
+	for (auto it = this->mBound.cbegin(); it != this->mBound.cend(); ++it) {
+		for (auto id: this->mChords.value(it.key())) release(id);
 	}
 }
 
 void Hotkeys::loadTable() {
-	QJsonObject table = QJsonDocument::fromJson(DEFAULT_SHORTCUTS_JSON).object();
+	// The compiled-in table, then the user's file over it; a bare `name` is
+	// `quickshell:name` in both.
+	QJsonObject table;
+	auto overlay = [&](const QJsonObject& doc) {
+		for (auto it = doc.begin(); it != doc.end(); ++it) {
+			table[it.key().contains(':') ? it.key() : "quickshell:" + it.key()] = it.value();
+		}
+	};
+	overlay(QJsonDocument::fromJson(DEFAULT_SHORTCUTS_JSON).object());
 
 	auto path = qEnvironmentVariable("QS_SHORTCUTS");
 	if (path.isEmpty()) path = QDir::homePath() + "/.config/quickshell-macos/shortcuts.json";
@@ -252,24 +260,20 @@ void Hotkeys::loadTable() {
 		if (error.error != QJsonParseError::NoError) {
 			qWarning() << "Hotkeys:" << path << "ignored:" << error.errorString();
 		} else {
-			auto user = doc.object();
-			for (auto it = user.begin(); it != user.end(); ++it) {
-				table[it.key().contains(':') ? it.key() : "quickshell:" + it.key()] = it.value();
-			}
+			overlay(doc.object());
 		}
 	}
 
 	auto skhd = skhdChords();
 
 	for (auto it = table.begin(); it != table.end(); ++it) {
-		auto key = it.key().contains(':') ? it.key() : "quickshell:" + it.key();
+		const auto& key = it.key();
 		QStringList texts;
 		if (it.value().isString()) texts << it.value().toString();
 		else if (it.value().isArray()) {
 			for (auto value: it.value().toArray()) texts << value.toString();
 		}
 
-		QStringList kept;
 		for (const auto& text: texts) {
 			if (text.trimmed().isEmpty()) continue;
 			auto chord = parseChord(text);
@@ -283,22 +287,16 @@ void Hotkeys::loadTable() {
 				qInfo() << "Hotkeys:" << key << text << "left to skhd, which binds it in skhdrc";
 			} else {
 				this->mChords[key].append(chord.id);
-				kept << text.trimmed().toLower();
 			}
 		}
-
-		if (kept.size() == 1) this->mBindings[key] = kept.first();
-		else if (kept.size() > 1) this->mBindings[key] = kept;
 	}
 }
 
 void Hotkeys::bind(const QString& appid, const QString& name) {
 	auto key = appid + ":" + name;
-	auto& bound = this->mBound[key];
-	if (bound.refs++ > 0) return;
+	if (this->mBound[key]++ > 0) return;
 
-	bound.chords = this->mChords.value(key);
-	for (auto id: bound.chords) {
+	for (auto id: this->mChords.value(key)) {
 		acquire(id);
 		this->mListeners[id].append(key);
 	}
@@ -307,18 +305,13 @@ void Hotkeys::bind(const QString& appid, const QString& name) {
 void Hotkeys::unbind(const QString& appid, const QString& name) {
 	auto key = appid + ":" + name;
 	auto it = this->mBound.find(key);
-	if (it == this->mBound.end() || --it->refs > 0) return;
+	if (it == this->mBound.end() || --*it > 0) return;
 
-	for (auto id: it->chords) {
+	for (auto id: this->mChords.value(key)) {
 		release(id);
 		this->mListeners[id].removeAll(key);
 	}
 	this->mBound.erase(it);
-}
-
-QString Hotkeys::chord(const QString& appid, const QString& name) const {
-	auto value = this->mBindings.value(appid + ":" + name);
-	return value.typeId() == QMetaType::QStringList ? value.toStringList().join(", ") : value.toString();
 }
 
 void Hotkeys::dispatch(quint32 id, bool pressed) {

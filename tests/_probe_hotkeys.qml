@@ -59,8 +59,6 @@ ShellRoot {
         function pressed(): string { return String(root.pressedCount); }
         function released(): string { return String(root.releasedCount); }
         function events(): string { return root.events.join(" "); }
-        function chord(name: string): string { return Cocoa.Hotkeys.chord("quickshell", name); }
-        function bindings(): string { return JSON.stringify(Cocoa.Hotkeys.bindings); }
         function reset(): string { root.pressedCount = 0; root.releasedCount = 0; root.events = []; return "ok"; }
     }
 }

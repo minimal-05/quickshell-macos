@@ -74,11 +74,6 @@ ipc() { "$QS_BINARY" -p "$PROBE" ipc call hotkeys "$@" 2>/dev/null | tr -d '\r';
 eq() { if [ "$2" = "$3" ]; then printf '  PASS  %s\n' "$1"; else printf '  FAIL  %s\n        got:  %s\n        want: %s\n' "$1" "$2" "$3"; fails=$((fails+1)); fi; }
 settle() { for _ in 1 2 3 4 5 6 7 8 9 10; do [ "$(ipc events)" = "$1" ] && return; sleep 0.1; done; }
 
-eq "chord(qstest) from the table"        "$(ipc chord qstest)" "ctrl+alt+cmd+shift+z"
-eq "chord(qsskhd) left to skhd"          "$(ipc chord qsskhd)" ""
-eq "chord(qsmod) bare modifier unbound"  "$(ipc chord qsmod)" ""
-eq "chord(qsbad) unparsable unbound"     "$(ipc chord qsbad)" ""
-eq "bindings lists qsheld"               "$(ipc bindings | /usr/bin/python3 -c 'import json,sys; print(json.load(sys.stdin)["quickshell:qsheld"])')" "ctrl+alt+cmd+shift+y"
 eq "log: skhd overlap reported"          "$(grep -c 'left to skhd' "$LOG")" "1"
 eq "log: bare modifier reported"         "$(grep -c 'qsmod.*bare modifier' "$LOG")" "1"
 eq "log: unknown key reported"           "$(grep -c 'unknown key' "$LOG")" "1"
