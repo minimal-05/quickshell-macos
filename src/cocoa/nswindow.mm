@@ -368,53 +368,33 @@ void reapplyPanels() {
 	}
 }
 
-} // namespace qs::cocoa
-
-// Qt's cocoa plugin re-derives window level and collection behavior whenever the
-// application's active state changes, clobbering anything set here. Re-apply on
-// both transitions.
-@interface QsCocoaPanelObserver: NSObject
-@end
-
-@implementation QsCocoaPanelObserver
-- (void)reapply:(NSNotification*)notification {
-	(void) notification;
-	qs::cocoa::reapplyPanels();
-}
-
-- (void)becameActive:(NSNotification*)notification {
-	(void) notification;
-	qs::cocoa::releaseStartupActivation();
-	qs::cocoa::reapplyPanels();
-}
-@end
-
-namespace qs::cocoa {
-
 namespace {
 
+// Qt's cocoa plugin re-derives window level and collection behavior whenever
+// the application's active state changes, clobbering anything set here.
+// Re-apply on both transitions and on a display change. AppKit posts all
+// three on the main thread, so a nil queue runs the blocks right there, the
+// way a selector observer did. The tokens live as long as the process.
 void ensureObserver() {
-	static QsCocoaPanelObserver* observer = nil;
-	if (observer != nil) return;
-
-	observer = [[QsCocoaPanelObserver alloc] init];
+	static auto installed = false;
+	if (installed) return;
+	installed = true;
 
 	auto* center = NSNotificationCenter.defaultCenter;
+	auto reapply = ^(NSNotification*) { reapplyPanels(); };
 
-	[center addObserver:observer
-	           selector:@selector(becameActive:)
-	               name:NSApplicationDidBecomeActiveNotification
-	             object:nil];
-
-	[center addObserver:observer
-	           selector:@selector(reapply:)
-	               name:NSApplicationDidResignActiveNotification
-	             object:nil];
-
-	[center addObserver:observer
-	           selector:@selector(reapply:)
-	               name:NSApplicationDidChangeScreenParametersNotification
-	             object:nil];
+	[center addObserverForName:NSApplicationDidBecomeActiveNotification
+	                    object:nil
+	                     queue:nil
+	                usingBlock:^(NSNotification*) {
+	                  releaseStartupActivation();
+	                  reapplyPanels();
+	                }];
+	[center addObserverForName:NSApplicationDidResignActiveNotification object:nil queue:nil usingBlock:reapply];
+	[center addObserverForName:NSApplicationDidChangeScreenParametersNotification
+	                    object:nil
+	                     queue:nil
+	                usingBlock:reapply];
 }
 
 } // namespace
@@ -423,7 +403,6 @@ void registerPanel(WId view, PanelLayer layer, bool focusable) {
 	if (view == 0) return;
 
 	becomeShellProcess();
-	ensureObserver();
 
 	auto config = PanelConfig {.layer = layer, .focusable = focusable};
 

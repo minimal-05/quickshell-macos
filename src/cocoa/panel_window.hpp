@@ -87,19 +87,6 @@ private:
 	QTimer mPublishTimer;
 };
 
-class CocoaPanelEventFilter: public QObject {
-	Q_OBJECT;
-
-public:
-	explicit CocoaPanelEventFilter(QObject* parent = nullptr): QObject(parent) {}
-
-signals:
-	void surfaceCreated();
-
-protected:
-	bool eventFilter(QObject* watched, QEvent* event) override;
-};
-
 class CocoaPanelWindow: public ProxyWindowBase {
 	QSDOC_BASECLASS(PanelWindowInterface);
 	Q_OBJECT;
@@ -177,6 +164,8 @@ signals:
 
 protected:
 	void onPolished() override;
+	/// Installed on the backing window: a new native surface re-runs cocoaInit.
+	bool eventFilter(QObject* watched, QEvent* event) override;
 
 private slots:
 	void cocoaInit();
@@ -219,7 +208,6 @@ private:
 
 	QPointer<QScreen> mTrackedScreen = nullptr;
 	WId mRegisteredView = 0;
-	CocoaPanelEventFilter eventFilter;
 
 	// A closing panel stays mapped until its animation has played out; the timer
 	// is what finally hides it. Geometry updates are NOT held off meanwhile --

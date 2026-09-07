@@ -195,16 +195,16 @@ void CocoaReservation::publish() {
 	QProcess::startDetached(yabai, {"-m", "config", "external_bar", value});
 }
 
-bool CocoaPanelEventFilter::eventFilter(QObject* watched, QEvent* event) {
+bool CocoaPanelWindow::eventFilter(QObject* watched, QEvent* event) {
 	if (event->type() == QEvent::PlatformSurface) {
 		auto* surfaceEvent = static_cast<QPlatformSurfaceEvent*>(event); // NOLINT
 
 		if (surfaceEvent->surfaceEventType() == QPlatformSurfaceEvent::SurfaceCreated) {
-			emit this->surfaceCreated();
+			this->cocoaInit();
 		}
 	}
 
-	return this->QObject::eventFilter(watched, event);
+	return this->ProxyWindowBase::eventFilter(watched, event);
 }
 
 CocoaPanelWindow::CocoaPanelWindow(QObject* parent): ProxyWindowBase(parent) {
@@ -213,13 +213,6 @@ CocoaPanelWindow::CocoaPanelWindow(QObject* parent): ProxyWindowBase(parent) {
 	// for it would leave a config whose panels start hidden holding the
 	// activation Qt took at launch.
 	becomeShellProcess();
-
-	QObject::connect(
-	    &this->eventFilter,
-	    &CocoaPanelEventFilter::surfaceCreated,
-	    this,
-	    &CocoaPanelWindow::cocoaInit
-	);
 
 	this->bcExclusiveZone.setBinding([this]() -> qint32 {
 		switch (this->bExclusionMode.value()) {
@@ -500,7 +493,7 @@ CocoaPanelWindow::~CocoaPanelWindow() {
 void CocoaPanelWindow::connectWindow() {
 	this->ProxyWindowBase::connectWindow();
 
-	this->window->installEventFilter(&this->eventFilter);
+	this->window->installEventFilter(this);
 	this->updateScreen();
 
 	QObject::connect(
