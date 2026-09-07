@@ -22,6 +22,11 @@ No flags. Every Linux-only subsystem (Wayland, X11, the D-Bus services,
 Bluetooth, NetworkManager, jemalloc, the crash handler) now defaults **off on
 Apple** and `COCOA` defaults on, so a first configure on a Mac just works.
 
+C++ follows upstream's conventions (`.clang-format` and `.clang-tidy` in the
+repo root; lowercase `<qwindow.h>`-style Qt headers, `auto` where the type is
+deducible, one `Q_PROPERTY` per line). `-DDISTRIBUTOR` names this fork in
+`qs --version`; `qs-build` passes it.
+
 > **Copying the binary breaks it.** A `cp` of a Mach-O file invalidates its
 > signature and the kernel then kills it on exec with *no output at all* —
 > it looks like the binary silently does nothing. Always

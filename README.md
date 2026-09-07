@@ -8,7 +8,6 @@ This is a fork of
 [quickshell-mirror/quickshell](https://github.com/quickshell-mirror/quickshell).
 Upstream's history is intact; the macOS work sits on top of it. Same licence as
 upstream (**GPL-3.0**) — see [LICENSE](LICENSE) and [LICENSE-GPL](LICENSE-GPL).
-Upstream docs: [BUILD.md](BUILD.md), [HACKING.md](HACKING.md).
 
 ## Install
 
