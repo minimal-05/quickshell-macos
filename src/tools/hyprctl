@@ -6,7 +6,7 @@ actually uses exist here; each is answered from yabai, CoreGraphics or macOS
 defaults and printed in the JSON shape hyprctl -j produces so the QML that
 parses it is unchanged.
 
-  hyprctl [-j] monitors | cursorpos | binds | devices | activeworkspace | workspaces
+  hyprctl [-j] monitors | cursorpos | binds | devices
       binds: ~/.config/skhd/skhdrc plus ~/.config/quickshell-macos/shortcuts.json
   hyprctl getoption [-j] <option>
   hyprctl dispatch <dispatcher...>          hl.dsp.* lua form or classic form
@@ -93,23 +93,6 @@ def monitors(as_json):
     else:
         for m in out:
             print(f"Monitor {m['name']} (ID {m['id']}):\n\t{m['width']}x{m['height']} at {m['x']}x{m['y']}\n\tfocused: {'yes' if m['focused'] else 'no'}\n")
-
-
-def space_obj(s):
-    return {"id": s["index"], "name": str(s["index"]), "monitor": f"Display-{s['display']}",
-            "monitorID": s["display"] - 1, "windows": len(s.get("windows", [])),
-            "hasfullscreen": False, "lastwindow": "", "lastwindowtitle": ""}
-
-
-def workspaces(as_json):
-    out = [space_obj(s) for s in yabai("--spaces")]
-    print(json.dumps(out) if as_json else "\n".join(f"workspace ID {w['id']} ({w['name']}) on monitor {w['monitor']}:" for w in out))
-
-
-def activeworkspace(as_json):
-    s = yabai("--spaces", "--space")
-    out = space_obj(s) if s else {}
-    print(json.dumps(out) if as_json else f"workspace ID {out.get('id')} ({out.get('name')}) on monitor {out.get('monitor')}:")
 
 
 # ------------------------------------------------------------------ binds
@@ -390,10 +373,6 @@ def main(argv):
         cursorpos(as_json)
     elif cmd == "monitors":
         monitors(as_json)
-    elif cmd == "workspaces":
-        workspaces(as_json)
-    elif cmd == "activeworkspace":
-        activeworkspace(as_json)
     elif cmd == "binds":
         binds(as_json)
     elif cmd == "devices":

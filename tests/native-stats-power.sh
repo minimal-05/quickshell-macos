@@ -31,7 +31,7 @@ spawns() {
     local n
     n="$(printf '%s\n' "$out" | sed -n 's/^children of [0-9]* over [0-9]*s: \([0-9]*\) seen.*/\1/p')"
     if [ "${n:-1}" = 0 ]; then ok "$2: 0 children over ${PERF}s"
-    else bad "$2: $n children over ${PERF}s"; printf '%s\n' "$out" | sed -n '/by command line/,$p' | sed 's/^/        /'; fi
+    else bad "$2: $n children over ${PERF}s"; printf '%s\n' "$out" | sed -n '/by command/,$p' | sed 's/^/        /'; fi
 }
 
 # --- SystemStats -----------------------------------------------------------

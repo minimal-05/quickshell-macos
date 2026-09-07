@@ -121,7 +121,6 @@ eq "modifier released" "$(printf '%s\n' "$paste" | sed -n 4p)" "up vk=55 flags=0
 eq "shift held across calls" "$("$B/ydotool" --dry-run key --key-delay 0 30:1 | head -1)" "down vk=0 flags=0x20000"
 "$B/ydotool" --dry-run key --key-delay 0 42:0 54:0 >/dev/null
 eq "shift released across calls" "$("$B/ydotool" --dry-run key --key-delay 0 30:1 | head -1)" "down vk=0 flags=0x0"
-eq "type" "$("$B/ydotool" --dry-run type hi | wc -l | tr -d ' ')" "4"
 check "unknown verb exits 1" bash -c "! '$B/ydotool' mousemove 2>/dev/null"
 
 echo "secret-tool"

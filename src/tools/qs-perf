@@ -2,7 +2,7 @@
 """Measure what a quickshell instance costs over a window.
 
     qs-perf [pid] [seconds]               table + one JSON line in tests/perf-history.jsonl
-    qs-perf --children [pid] [seconds]    histogram of child command lines seen
+    qs-perf --children [pid] [seconds]    histogram of children seen, polled at 1 ms
 
 Defaults: the live shell (the `quickshell -p .../shell.qml` process), 60 s.
 
@@ -14,9 +14,11 @@ accumulate the CPU of every reaped child, ri_interrupt_wkups counts wakeups.
 Time fields are in mach absolute-time units, so they are scaled through
 mach_timebase_info (125/3 on Apple Silicon, 1/1 on Intel).
 
-Children are counted by sampling the process tree at 250 ms and de-duplicating
-by pid, so anything shorter than a sample can be missed: the spawns/s figure
-is a floor, the reaped-children CPU% is exact.
+The table counts children by sampling `ps` at 250 ms and de-duplicating by
+pid, so anything shorter than a sample can be missed: the spawns/s figure is a
+floor, the reaped-children CPU% is exact. --children polls libproc's
+proc_listchildpids() every millisecond instead, which catches the 10 ms
+yabai/jq children, and follows one level of grandchildren (sh -c '...' | jq).
 
 Stdlib + ctypes only, on purpose: it has to run from a bare launchd PATH.
 """
@@ -35,11 +37,6 @@ ROOT = re.sub(r"/(Quickshell\.app/Contents/Resources/tools|src/tools)$", "",
               os.path.dirname(os.path.realpath(__file__)))
 HISTORY = os.path.join(ROOT, "tests", "perf-history.jsonl")
 RUNTIME = os.environ.get("XDG_RUNTIME_DIR") or f"/tmp/quickshell-{os.getuid()}"
-# ponytail: 250 ms ps sampling is a floor -- a child that lives <250 ms
-# (grep, awk, jq) is usually missed, which is why this reads far below the
-# audit's 12-15 spawns/s. Ceiling: proves *which* long-lived spawns went away,
-# not the total. Upgrade path: kqueue EVFILT_PROC with NOTE_FORK|NOTE_EXEC|
-# NOTE_TRACK on the pid, which catches every exec regardless of lifetime.
 SAMPLE_S = 0.25
 # Same shape qs-reap kills: the perl interpreter running the script, not any argv that mentions it.
 ADAPTER = re.compile(r"^\S*/perl\s+\S*/media-control/mediaremote-adapter\.pl(\s|$)")
@@ -91,6 +88,38 @@ def rusage(pid):
 
 
 # --- process tree ------------------------------------------------------------
+
+_libproc = ctypes.CDLL("/usr/lib/libproc.dylib")
+_libproc.proc_listchildpids.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_int]
+_libproc.proc_name.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32]
+_pids = (ctypes.c_int * 512)()
+_name = ctypes.create_string_buffer(64)
+
+
+def child_pids(pid):
+    return _pids[:max(0, _libproc.proc_listchildpids(pid, _pids, ctypes.sizeof(_pids)))]
+
+
+def proc_name(pid):
+    n = _libproc.proc_name(pid, _name, ctypes.sizeof(_name))
+    return _name.value.decode(errors="replace") if n > 0 else "?"
+
+
+def poll_children(pid, secs):
+    """{pid: (depth, name)} of everything seen under pid, polled at 1 ms."""
+    parent, seen, deadline = proc_name(pid), {}, time.monotonic() + secs
+    while time.monotonic() < deadline:
+        for c in child_pids(pid):
+            for p, depth in [(c, 1)] + [(g, 2) for g in child_pids(c)]:
+                # Between fork and exec a child still carries its parent's
+                # name; keep re-reading it until it is something else or gone.
+                if p not in seen or seen[p][1] in (parent, "sh", "bash"):
+                    nm = proc_name(p)
+                    if p not in seen or nm != "?":
+                        seen[p] = (depth, nm)
+        time.sleep(0.001)
+    return seen
+
 
 def ps_table():
     """[(pid, ppid, args)] for every process; one ps call per sample."""
@@ -213,8 +242,7 @@ def parse_args(argv):
 
 
 def watch(pid, secs):
-    """Sample the tree for `secs`; return rusage deltas and the children seen."""
-    r0 = rusage(pid)
+    """Sample the tree with ps for `secs`; the children seen and the last table."""
     t0 = time.monotonic()
     seen = {}      # pid -> (depth, args)
     while True:
@@ -225,9 +253,7 @@ def watch(pid, secs):
         if left <= 0:
             break
         time.sleep(min(SAMPLE_S, left))
-    r1 = rusage(pid)
-    elapsed = time.monotonic() - t0
-    return r0, r1, elapsed, seen, rows
+    return seen, rows
 
 
 def cmd_name(args):
@@ -242,7 +268,9 @@ def main(argv):
     except ProcessLookupError:
         sys.exit(f"qs-perf: no such pid {pid}")
 
-    r0, r1, elapsed, seen, rows = watch(pid, secs)
+    r0, t0 = rusage(pid), time.monotonic()
+    seen, rows = (poll_children(pid, secs), None) if children else watch(pid, secs)
+    r1, elapsed = rusage(pid), time.monotonic() - t0
 
     def d(field):
         return getattr(r1, field) - getattr(r0, field)
@@ -252,16 +280,11 @@ def main(argv):
     direct = [p for p, (depth, _) in seen.items() if depth == 1]
 
     if children:
-        hist = Counter(cmd_name(a) for _, a in seen.values())
-        lines = Counter(a[:110] for _, a in seen.values())
         print(f"children of {pid} over {elapsed:.0f}s: {len(seen)} seen "
               f"({len(direct)} direct), {child_cpu / elapsed * 100:.1f}% reaped-child CPU")
         print("\n  by command:")
-        for name, n in hist.most_common():
+        for name, n in Counter(nm for _, nm in seen.values()).most_common():
             print(f"  {n:5d}  {name}")
-        print("\n  by command line:")
-        for line, n in lines.most_common(40):
-            print(f"  {n:5d}  {line}")
         return 0
 
     stats = {
