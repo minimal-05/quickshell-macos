@@ -5,7 +5,7 @@ pragma Singleton
 // REAL: enum values copied verbatim from
 // quickshell/src/services/status_notifier/item.hpp (namespace qs::service::sni::Status).
 // `Status` really is the upstream QML type name -- end-4's TrayService.qml does
-// `i.status !== Status.Passive`. SystemTrayStatus.qml is a same-valued alias.
+// `i.status !== Status.Passive`.
 //
 // The enum is usable; it is the item list that is empty. See SystemTray.qml.
 
