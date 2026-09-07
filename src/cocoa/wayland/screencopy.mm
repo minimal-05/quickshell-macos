@@ -626,22 +626,19 @@ void ScreencopyView::itemChange(ItemChange change, const ItemChangeData& value) 
 			    value.window,
 			    &QQuickWindow::visibleChanged,
 			    this,
-			    &ScreencopyView::onWindowVisibleChanged
+			    &ScreencopyView::syncLiveStream
 			);
 		}
-		this->windowVisible = value.window != nullptr && value.window->isVisible();
 	}
 
 	this->QQuickItem::itemChange(change, value);
 
 	if (change == QQuickItem::ItemVisibleHasChanged || change == QQuickItem::ItemSceneChange) {
-		if (!this->mLive || !this->completed || this->mStatus == QStringLiteral("stopped")) return;
-		if (!this->canStream()) this->pause();
-		else if (this->impl->paused) this->restart();
+		this->syncLiveStream();
 	}
 }
 
-void ScreencopyView::onWindowVisibleChanged() {
+void ScreencopyView::syncLiveStream() {
 	this->windowVisible = this->window() != nullptr && this->window()->isVisible();
 	if (!this->mLive || !this->completed || this->mStatus == QStringLiteral("stopped")) return;
 	if (!this->canStream()) this->pause();
