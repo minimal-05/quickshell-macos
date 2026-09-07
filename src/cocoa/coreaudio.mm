@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cstdlib>
 #include <dispatch/dispatch.h>
+#include <optional>
 
 #include <qcoreapplication.h>
 #include <qhash.h>
@@ -113,27 +114,74 @@ QString transportName(UInt32 transport) {
 // virtual main volume (what the Sound settings slider and the volume keys
 // move), a main-element scalar, or only per-channel scalars. Apple's built-in
 // devices expose the first two; some USB interfaces expose only the last.
-// Reads and writes try them in that order.
+// Reads and writes try them in that order. Mute is a main-element control, or
+// per-channel controls that all move together.
 const AudioObjectPropertySelector VOLUME_SELECTORS[] = {
     kAudioHardwareServiceDeviceProperty_VirtualMainVolume,
     kAudioDevicePropertyVolumeScalar,
 };
+const AudioObjectPropertySelector MUTE_SELECTORS[] = {kAudioDevicePropertyMute};
 
-bool readVolume(AudioObjectID object, AudioObjectPropertyScope scope, int channels, float& out) {
-	for (auto selector: VOLUME_SELECTORS) {
-		auto addr = address(selector, scope);
-		Float32 value = 0;
-		if (has(object, addr) && get(object, addr, value)) {
-			out = value;
-			return true;
-		}
+/// The first address that exists (and, with @p writable, can be set): each of
+/// @p selectors on the main element, then the last of them on channels
+/// 1..@p channels.
+template <size_t N>
+std::optional<AudioObjectPropertyAddress> findControl(
+    AudioObjectID object,
+    AudioObjectPropertyScope scope,
+    int channels,
+    const AudioObjectPropertySelector (&selectors)[N],
+    bool writable
+) {
+	auto usable = [&](const AudioObjectPropertyAddress& addr) {
+		return has(object, addr) && (!writable || settable(object, addr));
+	};
+
+	for (auto selector: selectors) {
+		if (auto addr = address(selector, scope); usable(addr)) return addr;
 	}
 
+	for (int channel = 1; channel <= channels; ++channel) {
+		if (auto addr = address(selectors[N - 1], scope, channel); usable(addr)) return addr;
+	}
+
+	return std::nullopt;
+}
+
+/// Set the main control, or else every settable per-channel one.
+template <size_t N, typename T>
+bool writeControl(
+    AudioObjectID object,
+    AudioObjectPropertyScope scope,
+    int channels,
+    const AudioObjectPropertySelector (&selectors)[N],
+    T value
+) {
+	if (auto addr = findControl(object, scope, 0, selectors, true)) return set(object, *addr, value);
+
+	bool any = false;
+	for (int channel = 1; channel <= channels; ++channel) {
+		auto addr = address(selectors[N - 1], scope, channel);
+		if (has(object, addr) && settable(object, addr)) any |= set(object, addr, value);
+	}
+
+	return any;
+}
+
+bool readVolume(AudioObjectID object, AudioObjectPropertyScope scope, int channels, float& out) {
+	Float32 value = 0;
+	if (auto addr = findControl(object, scope, 0, VOLUME_SELECTORS, false);
+	    addr && get(object, *addr, value))
+	{
+		out = value;
+		return true;
+	}
+
+	// Only per-channel scalars: their average.
 	float sum = 0;
 	int found = 0;
 	for (int channel = 1; channel <= channels; ++channel) {
 		auto addr = address(kAudioDevicePropertyVolumeScalar, scope, channel);
-		Float32 value = 0;
 		if (has(object, addr) && get(object, addr, value)) {
 			sum += value;
 			++found;
@@ -146,69 +194,27 @@ bool readVolume(AudioObjectID object, AudioObjectPropertyScope scope, int channe
 }
 
 bool writeVolume(AudioObjectID object, AudioObjectPropertyScope scope, int channels, float volume) {
-	for (auto selector: VOLUME_SELECTORS) {
-		auto addr = address(selector, scope);
-		if (has(object, addr) && settable(object, addr)) return set(object, addr, static_cast<Float32>(volume));
-	}
-
-	bool any = false;
-	for (int channel = 1; channel <= channels; ++channel) {
-		auto addr = address(kAudioDevicePropertyVolumeScalar, scope, channel);
-		if (has(object, addr) && settable(object, addr)) any |= set(object, addr, static_cast<Float32>(volume));
-	}
-
-	return any;
+	return writeControl(object, scope, channels, VOLUME_SELECTORS, static_cast<Float32>(volume));
 }
 
 bool volumeWritable(AudioObjectID object, AudioObjectPropertyScope scope, int channels) {
-	for (auto selector: VOLUME_SELECTORS) {
-		auto addr = address(selector, scope);
-		if (has(object, addr) && settable(object, addr)) return true;
-	}
-
-	for (int channel = 1; channel <= channels; ++channel) {
-		auto addr = address(kAudioDevicePropertyVolumeScalar, scope, channel);
-		if (has(object, addr) && settable(object, addr)) return true;
-	}
-
-	return false;
+	return findControl(object, scope, channels, VOLUME_SELECTORS, true).has_value();
 }
 
-// Mute: a main-element control, or per-channel controls that all move together.
-
 bool readMute(AudioObjectID object, AudioObjectPropertyScope scope, int channels, bool& out) {
-	for (int element = 0; element <= channels; ++element) {
-		auto addr = address(kAudioDevicePropertyMute, scope, element);
-		UInt32 value = 0;
-		if (has(object, addr) && get(object, addr, value)) {
-			out = value != 0;
-			return true;
-		}
-	}
-
-	return false;
+	UInt32 value = 0;
+	auto addr = findControl(object, scope, channels, MUTE_SELECTORS, false);
+	if (!addr || !get(object, *addr, value)) return false;
+	out = value != 0;
+	return true;
 }
 
 bool writeMute(AudioObjectID object, AudioObjectPropertyScope scope, int channels, bool muted) {
-	auto main = address(kAudioDevicePropertyMute, scope);
-	if (has(object, main) && settable(object, main)) return set(object, main, static_cast<UInt32>(muted));
-
-	bool any = false;
-	for (int channel = 1; channel <= channels; ++channel) {
-		auto addr = address(kAudioDevicePropertyMute, scope, channel);
-		if (has(object, addr) && settable(object, addr)) any |= set(object, addr, static_cast<UInt32>(muted));
-	}
-
-	return any;
+	return writeControl(object, scope, channels, MUTE_SELECTORS, static_cast<UInt32>(muted));
 }
 
 bool muteWritable(AudioObjectID object, AudioObjectPropertyScope scope, int channels) {
-	for (int element = 0; element <= channels; ++element) {
-		auto addr = address(kAudioDevicePropertyMute, scope, element);
-		if (has(object, addr) && settable(object, addr)) return true;
-	}
-
-	return false;
+	return findControl(object, scope, channels, MUTE_SELECTORS, true).has_value();
 }
 
 // Which of a device's sides an event touches. Anything not listed (sample
