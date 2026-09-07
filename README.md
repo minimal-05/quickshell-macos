@@ -63,31 +63,5 @@ after `qs-dev --no-build` or `qs-bundle`, not before.
 
 ## Notes
 
-- `bin/qs` is the entry point and everything goes through it — the launchers
-  here, end-4's QML (which calls `qs` by bare name), skhd and karabiner via
-  `qs-ipc`, launchd via `qs-start`. It sets PATH, `XDG_RUNTIME_DIR` and
-  `QML2_IMPORT_PATH`, defaults `QS_CONFIG_NAME` to `end4`, and execs the binary
-  inside `Quickshell.app`. To point a launcher at another config set
-  `QS_CONFIG_NAME`, don't add a `-p`.
-- `bin/qs` is **committed**; the rest of `bin/` is generated symlinks onto it,
-  along with `Quickshell.app/`, `bin/quickshell` and `bin/menus`. Don't add the
-  generated ones, and don't gitignore `qs` — it used to be generated, which left
-  the one command everything calls absent from a fresh checkout.
-- `karabiner.json` and `skhdrc` call `bin/qs-ipc` by **absolute path** because
-  Karabiner does not expand `~`. Moving this repo means updating both;
-  darwin-dotfiles' `install.sh` rewrites them.
-
-- The binary lives in `Quickshell.app` so TCC has a stable identity to hang
-  Screen Recording, Accessibility and Full Disk Access on — a bare ad-hoc binary
-  is identified by its cdhash, so every grant died at the next rebuild. Set
-  `QS_CODESIGN_IDENTITY` to sign with a real certificate; unset is ad-hoc, which
-  runs but does not keep its grants. Copying a Mach-O invalidates its signature
-  and the kernel then kills it on exec **with no output at all**, so `qs-bundle`
-  re-signs every time. If Quickshell dies silently, check that first.
-- Media keys are grabbed by Karabiner and routed to `bin/qs-ipc`, which is why
-  macOS never draws its own volume/brightness HUD. The OSD is signal-driven, so
-  new bindings belong at the key, not at the HUD.
-- The shell configs are **not** here. They live in `~/.config/quickshell/<name>`,
-  tracked in `darwin-dotfiles`. Upstream end-4's is
-  [end-4/dots-hyprland](https://github.com/end-4/dots-hyprland); note that our
-  copy is flattened — `modules/bar`, not `modules/ii/bar`.
+How the port works, what is native and what is shimmed, TCC and signing:
+[PLATFORM.md](PLATFORM.md).

@@ -136,9 +136,16 @@ Take `src/cocoa/wayland/` as the worked example.
 
 `Quickshell` core · `Quickshell.Io` · `Quickshell.Widgets` · `PanelWindow`,
 `FloatingWindow`, `PopupWindow` · `Quickshell.Wayland` (`WlrLayershell` attached
-type driving NSWindow level; `ToplevelManager`/`Toplevel` over yabai) ·
-`Quickshell.Cocoa.Hotkeys` behind the `GlobalShortcut` shim (Carbon
-`RegisterEventHotKey`; chord table `src/cocoa/shortcuts.json` overlaid by
+type driving NSWindow level; `ToplevelManager`/`Toplevel` over yabai;
+`ScreencopyView` on ScreenCaptureKit; `IdleMonitor` over
+`SystemStats.idleSeconds()`) · `Quickshell.Services.Pam` (OpenPAM, in-process) ·
+`Quickshell.Cocoa`: `Power` (IOKit power sources; the `Services.UPower` shim
+answers on top of it), `CoreAudio` (HAL property listeners; the
+`Services.Pipewire` shim's default sink/source, volume and mute ride on it),
+`SystemStats` (Mach host statistics for end-4's `ResourceUsage`),
+`Reservation` (exclusive zones summed into yabai's `external_bar`),
+`Hotkeys` behind the `GlobalShortcut` shim (Carbon `RegisterEventHotKey`;
+chord table `src/cocoa/shortcuts.json` overlaid by
 `~/.config/quickshell-macos/shortcuts.json`, any chord skhdrc binds is left to
 skhd; a bare-modifier hold like end-4's SUPER for `workspaceNumber` is not a
 hot key and stays IPC-only until a CGEvent tap under Input Monitoring exists) ·
@@ -146,18 +153,20 @@ pasteboard watch (`src/cocoa/clipboard.mm`: `Quickshell.clipboardTextChanged`
 fires for copies made in other apps, which Qt alone only notices on app
 activation, and every copy lands in the history `bin/cliphist` serves from
 `~/Library/Application Support/quickshell/cliphist`; `bin/wl-copy`/`bin/wl-paste`
-wrap `pbcopy`/`pbpaste`)
+are `pbcopy`/`pbpaste`) · notifications: `bin/qs-notify-bridge` replays
+Notification Center's store into the `Services.Notifications` shim, and
+`bin/notify-send` speaks the v2 wire protocol into the same server
 
-**Shims (loose QML — should migrate into the binary)**
+**Shims (loose QML, over a native singleton or a tool)**
 
 `Quickshell.Hyprland` (yabai) · `Services.Mpris` (media-control) ·
-`Services.UPower` (pmset) · `Services.Pipewire` (default sink only) ·
-`Quickshell.Bluetooth` · `org.kde.kirigami` (`Icon` only)
+`Services.UPower` (over `Cocoa.Power`) · `Services.Pipewire` (over
+`Cocoa.CoreAudio`) · `Services.Notifications` (fed as above) ·
+`Quickshell.Bluetooth` (blueutil) · `org.kde.kirigami` (`Icon` only)
 
 **Inert but present, so configs load**
 
-`Services.SystemTray` · `Services.Notifications` · `Services.Polkit` ·
-`Services.Pam` · `org.kde.syntaxhighlighting`
+`Services.SystemTray` · `Services.Polkit` · `org.kde.syntaxhighlighting`
 
 **Not possible on macOS — document, don't shim**
 
@@ -165,25 +174,6 @@ Hosting other apps' menu-bar items · acting as the notification server ·
 observing now-playing through public API · per-app volume control (needs a HAL
 plugin) · a *secure* session lock · Spaces enumeration without private CGS ·
 greetd · polkit
-
-## Roadmap, by value over effort
-
-**Small.** `IdleMonitor` via `CGEventSourceSecondsSinceLastEventType`
-and `IdleInhibitor` via `IOPMAssertionCreateWithName` (both currently fork a
-subprocess every second) · `UPower` via `IOPSCopyPowerSourcesInfo` +
-`IOPSNotificationCreateRunLoopSource` · `Pipewire` default device via CoreAudio
-property listeners.
-
-**Medium.** `ScreencopyView` via ScreenCaptureKit (`SCStream` → `IOSurface` →
-`QSGTexture`) · `Networking` via SystemConfiguration + CoreWLAN, with
-`CLLocationManager` authorization to fix the redacted SSID · `ToplevelManager`
-via `CGWindowListCopyWindowInfo` + `AXUIElement`, which would drop the yabai
-dependency · `Bluetooth` via IOBluetooth.
-
-**Blocked on a bundle.** Running as a bare Mach-O binary gives no bundle
-identifier. That blocks `UNUserNotificationCenter` outright and keys Screen
-Recording / Accessibility grants to the binary path, so every rebuild loses them.
-A `.app` target should land before any permission-gated feature.
 
 ## Upstreamable
 
