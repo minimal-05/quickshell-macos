@@ -17,8 +17,6 @@
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export QS_BINARY="${QS_BINARY:-$ROOT/bin/qs}"
-export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp/quickshell-$UID}"
-export QML2_IMPORT_PATH="$ROOT/shims${QML2_IMPORT_PATH:+:$QML2_IMPORT_PATH}"
 PROBE="$ROOT/tests/_probe_hotkeys.qml"
 LOG="${TMPDIR:-/tmp}/qs-test-_probe_hotkeys.log"
 

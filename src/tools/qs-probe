@@ -7,6 +7,8 @@
 #   qs-probe            run the standard enter/leave sequence
 #   qs-probe --keep     leave the probe running afterwards
 #   qs-probe --watch [secs]   print hover state live while a human moves the pointer
+#   QS_PROBE_FOCUSABLE=1 qs-probe   the same, on a focusable panel
+#   QS_PROBE_QML=<root.qml> qs-probe   drive another probe root
 #
 # The instance lifecycle (start, wait for "Configuration Loaded", kill only
 # that pid, refuse live roots) is qs-test's; this script only sequences the

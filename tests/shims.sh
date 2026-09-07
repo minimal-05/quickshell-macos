@@ -14,7 +14,6 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SETTLE="${SETTLE:-5}"
 BINARY="${QS_BINARY:-$ROOT/bin/qs}"
-export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp/quickshell-$UID}"
 # qs-test refuses a second run on a root that is already up, so IPC goes
 # straight to the binary; the instance is keyed on the root path.
 ipc() { "$BINARY" -p "$1" ipc call "${@:2}" 2>/dev/null | tr -d '\r'; }

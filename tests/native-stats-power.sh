@@ -14,8 +14,6 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BINARY="${QS_BINARY:-$ROOT/bin/qs}"
 PERF="${PERF:-12}"
-export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp/quickshell-$UID}"
-export QML2_IMPORT_PATH="$ROOT/shims${QML2_IMPORT_PATH:+:$QML2_IMPORT_PATH}"
 fail=0
 ok()  { printf '  PASS  %s\n' "$1"; }
 bad() { printf '  FAIL  %s\n' "$1"; fail=1; }
