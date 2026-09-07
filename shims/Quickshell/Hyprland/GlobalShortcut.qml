@@ -19,7 +19,7 @@
 // IPC ROUTE, kept for scripts and for the names that have no chord: each
 // instance answers on `gs_<appid>_<name>` (every character outside
 // [A-Za-z0-9_] replaced by "_"), so
-//     qs ipc call gs_quickshell_panelFamilyCycle press
+//     qs ipc call gs_quickshell_lock press
 // emits pressed() then released(); `down` and `up` emit them separately.
 //
 // Hyprland.dispatch('hl.dsp.global("appid:name")') reaches the instance in

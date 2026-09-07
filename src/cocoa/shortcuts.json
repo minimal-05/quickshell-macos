@@ -32,7 +32,6 @@
   "quickshell:cheatsheetOpen": "",
   "quickshell:cheatsheetClose": "",
   "quickshell:overlayToggle": "ctrl+alt+cmd+w",
-  "quickshell:panelFamilyCycle": "ctrl+alt+cmd+shift+c",
   "quickshell:toggleLightDark": "ctrl+alt+cmd+d",
   "quickshell:lock": "ctrl+alt+cmd+l",
   "quickshell:lockFocus": "",
@@ -42,10 +41,8 @@
   "quickshell:regionSearch": "ctrl+alt+cmd+shift+g",
   "quickshell:regionRecord": "ctrl+alt+cmd+shift+r",
   "quickshell:regionRecordWithSound": "ctrl+alt+cmd+shift+v",
-  "quickshell:screenTranslate": "ctrl+alt+cmd+shift+l",
   "quickshell:brightnessIncrease": "",
   "quickshell:brightnessDecrease": "",
-  "quickshell:osdTrigger": "",
   "quickshell:osdVolumeTrigger": "",
   "quickshell:osdVolumeHide": ""
 }
