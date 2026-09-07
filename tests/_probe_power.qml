@@ -21,19 +21,14 @@ ShellRoot {
         function check(): string {
             const p = Cocoa.Power;
             const fails = [];
-            if (!p.ready) fails.push("not ready");
             if (!p.isPresent) return "no-battery";
             if (!(p.percentage > 0 && p.percentage <= 1)) fails.push(`percentage ${p.percentage}`);
             if (![Cocoa.Power.Charging, Cocoa.Power.Discharging, Cocoa.Power.FullyCharged, Cocoa.Power.PendingCharge].includes(p.state)) fails.push(`state ${p.state}`);
-            if (p.state === Cocoa.Power.Discharging && (!p.onBattery || p.externalConnected)) fails.push("discharging but not on battery");
+            if (p.state === Cocoa.Power.Discharging && !p.onBattery) fails.push("discharging but not on battery");
             if (p.state !== Cocoa.Power.Discharging && p.onBattery) fails.push("on battery but not discharging");
             if (!(p.energyCapacity > 0 && p.energy > 0 && p.energy <= p.energyCapacity * 1.05)) fails.push(`energy ${p.energy}/${p.energyCapacity}`);
-            if (!(p.energyFullDesign >= p.energyCapacity)) fails.push(`design ${p.energyFullDesign} < capacity ${p.energyCapacity}`);
-            if (!(p.voltage > 5 && p.voltage < 30)) fails.push(`voltage ${p.voltage}`);
             if (p.state === Cocoa.Power.Charging && p.energyRate < 0) fails.push("charging with negative rate");
             if (p.state === Cocoa.Power.Discharging && p.energyRate > 0) fails.push("discharging with positive rate");
-            if (!(p.temperature > 0 && p.temperature < 80)) fails.push(`temperature ${p.temperature}`);
-            if (!(p.cycleCount > 0)) fails.push(`cycleCount ${p.cycleCount}`);
             if (!(p.healthPercentage > 30 && p.healthPercentage <= 100)) fails.push(`health ${p.healthPercentage}`);
             if (!/^battery-.*-symbolic$/.test(p.iconName)) fails.push(`iconName ${p.iconName}`);
             if (p.name !== "InternalBattery-0") fails.push(`name ${p.name}`);
@@ -63,7 +58,7 @@ ShellRoot {
         function dump(): string {
             const p = Cocoa.Power;
             const out = {};
-            for (const k of ["ready", "isPresent", "onBattery", "externalConnected", "percentage", "state", "timeToEmpty", "timeToFull", "energy", "energyCapacity", "energyFullDesign", "energyRate", "voltage", "current", "temperature", "cycleCount", "designCycleCount", "healthPercentage", "healthCondition", "iconName", "name", "model", "serial", "lowPowerMode", "highPowerMode", "hasHighPowerMode", "thermalState"])
+            for (const k of ["isPresent", "onBattery", "percentage", "state", "timeToEmpty", "timeToFull", "energy", "energyCapacity", "energyRate", "healthPercentage", "iconName", "name", "lowPowerMode", "highPowerMode", "hasHighPowerMode", "thermalState"])
                 out[k] = p[k];
             out.changes = changes;
             return JSON.stringify(out);

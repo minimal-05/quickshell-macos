@@ -182,7 +182,7 @@ void Power::readBattery() {
 	}
 
 	next.isPresent = boolAt(reg, "BatteryInstalled").value_or(boolAt(ps, kIOPSIsPresentKey).value_or(false));
-	next.externalConnected = boolAt(reg, "ExternalConnected")
+	auto externalConnected = boolAt(reg, "ExternalConnected")
 	                             .value_or(stringAt(ps, kIOPSPowerSourceStateKey) == QString::fromUtf8(kIOPSACPowerValue));
 	auto charging = boolAt(reg, "IsCharging").value_or(boolAt(ps, kIOPSIsChargingKey).value_or(false));
 	auto full = boolAt(reg, "FullyCharged").value_or(boolAt(ps, kIOPSIsChargedKey).value_or(false));
@@ -192,9 +192,9 @@ void Power::readBattery() {
 		// IsCharging = No too, and "plugged in but held below full by optimised
 		// charging" is PendingCharge, which a percentage alone cannot tell from
 		// a real discharge.
-		if (next.externalConnected && full) next.state = State::FullyCharged;
+		if (externalConnected && full) next.state = State::FullyCharged;
 		else if (charging) next.state = State::Charging;
-		else if (next.externalConnected) next.state = State::PendingCharge;
+		else if (externalConnected) next.state = State::PendingCharge;
 		else next.state = State::Discharging;
 	}
 
@@ -227,25 +227,18 @@ void Power::readBattery() {
 	// mAh x mV = uWh. Computed at the present terminal voltage rather than a
 	// design voltage, which is as close as the gauge gets to UPower's figures.
 	auto mv = numberAt(reg, "Voltage").value_or(0);
-	next.voltage = mv / 1000;
 	next.energy = rawCur * mv / 1e6;
 	next.energyCapacity = rawMax * mv / 1e6;
-	next.energyFullDesign = design * mv / 1e6;
 
 	// Amperage is the gauge's averaged current, negative while the battery
 	// supplies the load. Apple's PowerTelemetryData carries a better-averaged
 	// power figure in mW on the Macs that publish it; its sign is taken from
 	// the current so the two never disagree.
 	auto ma = numberAt(reg, "Amperage").value_or(0);
-	next.current = ma / 1000;
 	auto sign = ma < 0 ? -1.0 : 1.0;
 	auto telemetry = dictAt(reg, "PowerTelemetryData");
 	auto mw = numberAt(telemetry, "BatteryPower");
 	next.energyRate = mw ? sign * std::fabs(*mw) / 1000 : ma * mv / 1e6;
-
-	next.temperature = numberAt(reg, "Temperature").value_or(0) / 100;
-	next.cycleCount = static_cast<int>(numberAt(reg, "CycleCount").value_or(0));
-	next.designCycleCount = static_cast<int>(numberAt(reg, "DesignCycleCount9C").value_or(0));
 
 	// UPower's Capacity property: full-charge capacity over design capacity.
 	// ponytail: System Settings' "Maximum Capacity" is a smoothed figure that
@@ -254,12 +247,9 @@ void Power::readBattery() {
 	// a 1 s spawn. Upgrade path: read it once an hour in the shim if anyone
 	// asks for parity with the Settings pane.
 	if (design > 0 && rawMax > 0) next.healthPercentage = rawMax / design * 100;
-	next.healthCondition = stringAt(ps, kIOPSBatteryHealthKey);
 
 	next.iconName = iconNameFor(next.state, static_cast<int>(std::lround(next.percentage * 100)), next.isPresent);
 	next.name = stringAt(ps, kIOPSNameKey);
-	next.model = stringAt(reg, "DeviceName");
-	next.serial = stringAt(ps, kIOPSHardwareSerialNumberKey);
 
 	if (reg != nullptr) CFRelease(reg);
 	if (list != nullptr) CFRelease(list);
