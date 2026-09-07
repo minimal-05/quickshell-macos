@@ -354,12 +354,48 @@ void settlePanel(WId view) {
 	window.alphaValue = 1.0;
 }
 
+namespace {
+
+/// Re-apply native state to every registered window.
 void reapplyPanels() {
 	auto& configs = panelConfigs();
 	for (auto it = configs.cbegin(); it != configs.cend(); ++it) {
 		applyConfig(it.key(), it.value());
 	}
 }
+
+/// Run without a dock icon or application menu bar.
+void setAccessoryActivationPolicy() {
+	[NSApplication.sharedApplication setActivationPolicy:NSApplicationActivationPolicyAccessory];
+}
+
+/// Unbind cmd-Q from the Quit item Qt installs by default.
+///
+/// A shell is not an app you quit by reflex. Qt's cocoa plugin always builds an
+/// application menu whose Quit item is wired to cmd-Q, so a stray cmd-Q aimed at
+/// whatever happened to hold key status could tear the whole shell down. Quit
+/// stays available through the CLI and IPC.
+void stripQuitKeyEquivalent() {
+	// Qt builds its application menu lazily, so do this after the current turn
+	// of the run loop rather than racing it.
+	dispatch_async(dispatch_get_main_queue(), ^{
+	  auto* mainMenu = NSApplication.sharedApplication.mainMenu;
+	  if (mainMenu == nil || mainMenu.numberOfItems == 0) return;
+
+	  // The application menu is always the first item's submenu.
+	  auto* appMenu = [mainMenu itemAtIndex:0].submenu;
+	  if (appMenu == nil) return;
+
+	  for (NSMenuItem* item in appMenu.itemArray) {
+		  if ([item.keyEquivalent isEqualToString:@"q"]) {
+			  item.keyEquivalent = @"";
+			  item.keyEquivalentModifierMask = 0;
+		  }
+	  }
+	});
+}
+
+} // namespace
 
 namespace {
 
@@ -645,40 +681,8 @@ bool anyMouseButtonHeld() {
 	return NSEvent.pressedMouseButtons != 0;
 }
 
-void setAccessoryActivationPolicy() {
-	[NSApplication.sharedApplication setActivationPolicy:NSApplicationActivationPolicyAccessory];
-}
-
 void setRegularActivationPolicy() {
 	[NSApplication.sharedApplication setActivationPolicy:NSApplicationActivationPolicyRegular];
-}
-
-void stripQuitKeyEquivalent() {
-	// Qt builds its application menu lazily, so do this after the current turn
-	// of the run loop rather than racing it.
-	dispatch_async(dispatch_get_main_queue(), ^{
-	  auto* mainMenu = NSApplication.sharedApplication.mainMenu;
-	  if (mainMenu == nil || mainMenu.numberOfItems == 0) return;
-
-	  // The application menu is always the first item's submenu.
-	  auto* appMenu = [mainMenu itemAtIndex:0].submenu;
-	  if (appMenu == nil) return;
-
-	  for (NSMenuItem* item in appMenu.itemArray) {
-		  if ([item.keyEquivalent isEqualToString:@"q"]) {
-			  item.keyEquivalent = @"";
-			  item.keyEquivalentModifierMask = 0;
-		  }
-	  }
-	});
-}
-
-qreal screenTopSafeAreaInset(WId view) {
-	auto* window = windowFor(view);
-	auto* screen = window != nil ? window.screen : NSScreen.mainScreen;
-	if (screen == nil) return 0;
-
-	return screen.safeAreaInsets.top;
 }
 
 

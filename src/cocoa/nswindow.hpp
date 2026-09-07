@@ -127,9 +127,6 @@ void setPanelInputEnabled(WId view, bool enabled);
 /// Stop tracking a window previously passed to registerPanel.
 void unregisterPanel(WId view);
 
-/// Re-apply native state to every registered window.
-void reapplyPanels();
-
 /// True while an interactive screen capture is waiting on the user.
 ///
 /// The panel and popup pointer pollers synthesise mouse moves into Qt from the
@@ -178,9 +175,6 @@ bool feedPointer(QWindow* window, QPoint raw, bool& inside, QPoint& last, const 
 /// other applications' windows, so a press Qt never saw still holds the button.
 bool anyMouseButtonHeld();
 
-/// Run without a dock icon or application menu bar.
-void setAccessoryActivationPolicy();
-
 /// Run as an ordinary application: dock icon, app switcher, menu bar.
 ///
 /// The shared bundle's Info.plist sets LSUIElement so the shell (the common
@@ -191,17 +185,5 @@ void setAccessoryActivationPolicy();
 /// Accessory apps' windows also don't get a normal accessibility role, which
 /// is what left yabai unable to read these windows' titles at all.
 void setRegularActivationPolicy();
-
-/// Unbind cmd-Q from the Quit item Qt installs by default.
-///
-/// A shell is not an app you quit by reflex. Qt's cocoa plugin always builds an
-/// application menu whose Quit item is wired to cmd-Q, so a stray cmd-Q aimed at
-/// whatever happened to hold key status could tear the whole shell down. Quit
-/// stays available through the CLI and IPC.
-void stripQuitKeyEquivalent();
-
-/// Top inset of the screen containing @p view, in points. Zero when the display
-/// has no camera housing.
-qreal screenTopSafeAreaInset(WId view);
 
 } // namespace qs::cocoa
