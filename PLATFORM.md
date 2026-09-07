@@ -18,9 +18,10 @@ Or directly, in a checkout with the patch applied:
 cmake -B build && cmake --build build
 ```
 
-No flags. Every Linux-only subsystem (Wayland, X11, the D-Bus services,
-Bluetooth, NetworkManager, jemalloc, the crash handler) now defaults **off on
-Apple** and `COCOA` defaults on, so a first configure on a Mac just works.
+No flags. The Linux-only subsystems (Wayland, X11, the D-Bus services,
+Bluetooth, NetworkManager) are not in this tree at all -- upstream Quickshell
+has them -- and jemalloc and the crash handler default **off on Apple** while
+`COCOA` defaults on, so a first configure on a Mac just works.
 
 C++ follows upstream's conventions (`.clang-format` and `.clang-tidy` in the
 repo root; lowercase `<qwindow.h>`-style Qt headers, `auto` where the type is
@@ -72,7 +73,7 @@ platform without user QML changing.
 
 **2. `qt_add_qml_module`** — each module URI is created by a CMake target
 compiled into the binary. `Quickshell.Wayland` on Linux is built from
-`src/wayland/`; on macOS it is built from `src/cocoa/wayland/`.
+upstream's `src/wayland/`; here it is built from `src/cocoa/wayland/`.
 
 ### What must be C++
 
@@ -119,7 +120,7 @@ Take `src/cocoa/wayland/` as the worked example.
    ```
 2. `add_subdirectory(<area>)` from `src/cocoa/CMakeLists.txt`.
 3. **Match upstream's API exactly** — property, signal and method names. Read
-   the Linux implementation under `src/wayland/`, `src/services/` etc. and mirror
+   upstream Quickshell's implementation under `src/wayland/`, `src/services/` etc. and mirror
    it. A macOS module whose members are named differently is useless: the whole
    point is that a config written for Linux keeps working.
 4. Where something cannot work on macOS, still declare it with a sane inert
