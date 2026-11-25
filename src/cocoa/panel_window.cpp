@@ -496,6 +496,21 @@ void CocoaPanelWindow::connectWindow() {
 	this->window->installEventFilter(this);
 	this->updateScreen();
 
+	// Plugging, unplugging or rearranging a display moves the window to another
+	// QScreen. updateScreen only ran at construction, so the panel kept
+	// measuring the screen it was born on; worse, once that QScreen is destroyed
+	// mTrackedScreen (a QPointer) goes null and updateDimensions early-returns
+	// forever, freezing the geometry. A full-screen overlay then stays
+	// laptop-sized on an external display and its centred content centres on the
+	// old width. Re-tracking re-runs updateDimensions and re-binds the
+	// geometryChanged connections onto the new screen.
+	QObject::connect(
+	    this->window,
+	    &QWindow::screenChanged,
+	    this,
+	    &CocoaPanelWindow::updateScreen
+	);
+
 	QObject::connect(
 	    this->window,
 	    &QQuickWindow::visibleChanged,

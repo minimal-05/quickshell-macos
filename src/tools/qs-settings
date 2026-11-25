@@ -24,8 +24,9 @@ CONFIG="${QS_SETTINGS_CONFIG:-$CFG_DIR/settings.qml}"
 # PATH, XDG_RUNTIME_DIR and QML2_IMPORT_PATH are the binary's own doing.
 
 # The settings window is a dialog, not a tile. Labelled so repeated runs replace
-# the rule instead of stacking copies.
-yabai -m rule --add label=quickshell app="^quickshell$" manage=off >/dev/null 2>&1 || true
+# the rule instead of stacking copies. app= is case-sensitive and matches the
+# bundle's name, not the process name -- this window reports "Quickshell".
+yabai -m rule --add label=quickshell app="^[Qq]uickshell" manage=off >/dev/null 2>&1 || true
 
 # Already running? Reuse it -- closing the window only hides it, so the process
 # is usually still there and showing it again skips ~2s of QML loading. IPC first

@@ -14,7 +14,10 @@
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CURVE=1.5
+# The macOS volume scalar is linear in dB (0 -> -63.5 dB, 1 -> 0 dB), so even
+# steps are what give an equal loudness change per press. See the matching note
+# in services/Audio.qml.
+CURVE=1.0
 STEPS=16
 
 case "${1:-}" in
@@ -48,5 +51,11 @@ print(max(0, min(100, v)))
 ') || exit 1
 
 osascript -e "set volume output volume $next"
-# Any deliberate volume change unmutes, the way the macOS keys do.
-osascript -e 'set volume output muted false'
+# Volume 0 is the bottom of the device's range, about -63 dB, not silence, so
+# the bottom step has to mute to actually go quiet. Any other deliberate change
+# unmutes, the way the macOS keys do.
+if [ "$next" -eq 0 ]; then
+    osascript -e 'set volume output muted true'
+else
+    osascript -e 'set volume output muted false'
+fi

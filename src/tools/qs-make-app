@@ -64,6 +64,37 @@ exec "$ROOT/bin/$tool" "\$@"
 LAUNCHER
     chmod +x "$app/Contents/MacOS/$name"
 
+    # A real copy of the engine, not a symlink or an exec into
+    # Quickshell.app: macOS resolves an app's identity (name, bundle id,
+    # everything yabai's window rules and Accessibility keys off) from the
+    # bundle the *actually running* Mach-O lives inside, walking up from its
+    # real path -- so a process that ends up running Quickshell.app's own
+    # binary is, as far as the system is concerned, Quickshell.app,
+    # regardless of what launched it or what its own Info.plist says.
+    #
+    # That was silently breaking window management: every window from every
+    # one of these apps reported the same identity, so a manage=off rule
+    # meant for one (the picker, Settings) caught them all, and yabai
+    # couldn't act on any of them at all -- role and subrole came back empty,
+    # and even a direct `yabai -m window <id> --toggle float` failed with
+    # "could not locate the window to act on", because yabai's own
+    # per-application Accessibility observer had already attached to
+    # whichever one of these processes it saw first and never got a distinct
+    # one for the rest. A real copy, run directly with no further exec, keeps
+    # its own bundle's identity for its entire life and fixes both at once:
+    # yabai reports it correctly and can act on it, and it stops matching
+    # rules meant for a different one of these apps.
+    cp "$ROOT/Quickshell.app/Contents/MacOS/quickshell" "$app/Contents/MacOS/quickshell-engine"
+    # Copying a Mach-O invalidates its signature, and codesign-ing the bundle
+    # below does not reach back and fix this one: that call deep-signs nested
+    # *bundles*, but a loose executable sitting in Contents/MacOS/ next to the
+    # one actually named by CFBundleExecutable is just a resource to it, hashed
+    # into the bundle's own seal, not re-signed as a Mach-O in its own right.
+    # Launched with an invalid signature, the kernel kills it before main()
+    # even runs -- taskgated logs "Invalid Signature" and there is no other
+    # sign anything went wrong.
+    codesign -f -s - "$app/Contents/MacOS/quickshell-engine" >/dev/null 2>&1 || true
+
     [ -f "$ROOT/assets/$name.icns" ] && cp "$ROOT/assets/$name.icns" "$app/Contents/Resources/$name.icns"
 
     # Ad-hoc sign the bundle. Nothing here is distributed, but an unsigned bundle

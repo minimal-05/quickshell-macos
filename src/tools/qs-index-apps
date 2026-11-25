@@ -17,7 +17,9 @@ for an absolute .app path.
 import os
 import pathlib
 import re
+import json
 import plistlib
+import subprocess
 import sys
 
 ROOTS = ["/Applications", "/System/Applications", os.path.expanduser("~/Applications")]
@@ -42,13 +44,34 @@ def find_apps():
 
 
 def read_info(app):
+    # A dot-prefixed bundle is hidden from every directory listing including
+    # Finder's, which on macOS means "internal helper, never launch directly"
+    # -- e.g. the virtual-HID manager Karabiner drops next to itself.
+    if os.path.basename(app).startswith("."):
+        return None
     try:
         with open(os.path.join(app, "Contents", "Info.plist"), "rb") as f:
             info = plistlib.load(f)
     except Exception:
-        return None
-    # Agents and background helpers have no UI to launch.
-    if info.get("LSUIElement") or info.get("LSBackgroundOnly"):
+        try:
+            # plistlib only reads XML/binary plists. Some apps still ship the
+            # old ASCII (NeXTSTEP) format, which plutil -- always present on
+            # macOS -- converts on the fly; skipping instead lost real apps
+            # with nothing wrong other than an old-style Info.plist.
+            out = subprocess.run(
+                ["plutil", "-convert", "json", "-o", "-", os.path.join(app, "Contents", "Info.plist")],
+                capture_output=True, timeout=5,
+            )
+            info = json.loads(out.stdout) if out.returncode == 0 else None
+        except Exception:
+            info = None
+        if info is None:
+            return None
+    # LSBackgroundOnly means literally no UI -- that one has nothing to launch.
+    # LSUIElement only means no Dock icon; Docker Desktop and Ollama both set
+    # it and are still full apps with windows, so it is not a reason to hide
+    # them from a launcher the way a Dock does.
+    if info.get("LSBackgroundOnly"):
         return None
     name = info.get("CFBundleDisplayName") or info.get("CFBundleName") or os.path.basename(app)[:-4]
     return str(name), info.get("CFBundleIdentifier")

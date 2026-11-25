@@ -1,0 +1,18 @@
+#!/bin/bash
+# Stops the bar for real. `Qt.quit()` alone isn't enough: org.quickshell.bar's
+# KeepAlive relaunches a dead job within a couple of seconds, so quitting from
+# inside the shell just makes it flash and come back. bootout unloads the job
+# itself, so nothing brings it back until qs-open runs (or the next login).
+#
+# pkill covers configs launchd doesn't know about (qs -c mine, a qs-dev run):
+# bootout on a label that isn't loaded just fails silently, so this still
+# quits those.
+set -uo pipefail
+launchctl bootout "gui/$(id -u)/org.quickshell.bar" >/dev/null 2>&1
+pkill -x quickshell 2>/dev/null
+
+# The bar reserves its strip via yabairc's `external_bar all:40:0`, not
+# top_padding, so killing the process alone leaves that space empty rather
+# than freeing it for tiled windows. Reclaim it; qs-open puts it back.
+command -v yabai >/dev/null 2>&1 && yabai -m config external_bar all:0:0 >/dev/null 2>&1
+exit 0
