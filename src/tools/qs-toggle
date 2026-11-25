@@ -1,0 +1,22 @@
+#!/bin/bash
+# Bound to the "super y" chord (ctrl+alt+cmd - y in skhdrc, this port's stand-in
+# for Hyprland's SUPER). One key hides the shell and brings it back.
+#
+# Hide, not quit: a cold start is a Mach-O load, Qt/QML init and a TCC check,
+# which is the expensive part. `qs-ipc shell toggle` only unloads the panel
+# families inside the running process, so coming back reuses all of that. The
+# yabai strip follows on its own -- the Cocoa backend sums the *visible*
+# panels' exclusive zones into external_bar, so it zeroes when they unload.
+#
+# qs-open is still the not-running path: that is a genuine cold start, and only
+# launchd can do it. qs-quit stays for actually stopping the bar.
+#
+# Invoked by its real bin/ path, not through the ~/.local/bin wrappers, so it
+# can shell out to its siblings by relative path with no PATH games.
+set -uo pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if pgrep -x quickshell >/dev/null 2>&1; then
+    exec "$HERE/qs-ipc" shell toggle
+else
+    exec "$HERE/qs-open"
+fi

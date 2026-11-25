@@ -1,0 +1,15 @@
+#!/bin/bash
+# Brings the bar back after qs-quit unloaded it. Mirrors the bootstrap +
+# kickstart dance startup.sh already does for a fresh start: bootstrap only
+# registers the job, it does not actually run it, so kickstart is required
+# even right after a bootstrap.
+set -uo pipefail
+GUI="gui/$(id -u)"
+PLIST="$HOME/Library/LaunchAgents/org.quickshell.bar.plist"
+launchctl print "$GUI/org.quickshell.bar" >/dev/null 2>&1 || launchctl bootstrap "$GUI" "$PLIST"
+launchctl kickstart -k "$GUI/org.quickshell.bar"
+
+# Reserve the strip qs-quit gave back. Height must match yabairc's own
+# `external_bar all:40:0` -- there is no single source of truth for it, so a
+# bar height change has to update both.
+command -v yabai >/dev/null 2>&1 && yabai -m config external_bar all:40:0 >/dev/null 2>&1
